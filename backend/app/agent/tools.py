@@ -199,9 +199,9 @@ import httpx
 # 允许的 RSS 源白名单（防止 SSRF 攻击）
 _RSS_WHITELIST = [
     "https://www.ithome.com/rss/",
-    "https://rsshub.app/36kr/newsflashes",
-    "https://rsshub.app/jiqizhixin/latest",
-    "https://rsshub.app/qbitai/category/ai",
+    # 下面是备选，如果访问不了不要用
+    # "https://rsshub.app/36kr/newsflashes",
+    # "https://rsshub.app/jiqizhixin/latest",
 ]
 
 
