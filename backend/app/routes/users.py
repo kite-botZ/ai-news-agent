@@ -80,3 +80,16 @@ def get_brief(username: str, date: str):
         return {"date": date, "content": content}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/{username}/generate")
+def generate_brief(username: str, verbose: bool = False):
+    """触发 Agent 为指定用户生成今日简报。"""
+    try:
+        from app.agent.service import generate_brief_for_user
+        result = generate_brief_for_user(username, verbose=verbose)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Agent 执行失败：{e}")

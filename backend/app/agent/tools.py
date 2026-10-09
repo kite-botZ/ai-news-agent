@@ -17,14 +17,29 @@ from pathlib import Path
 
 from app.config import DATA_DIR
 
-# 沙箱根目录
+# 沙箱根目录（默认 data/）
 SANDBOX_DIR = Path(DATA_DIR)
+
+# 当前会话的用户目录（生成简报时会被设置为 data/users/<username>/）
+_current_sandbox: Path | None = None
+
+
+def set_sandbox(sandbox_dir: Path | None):
+    """设置当前会话的沙箱根目录。None 表示回到默认 data/。"""
+    global _current_sandbox
+    _current_sandbox = sandbox_dir
+
+
+def _get_sandbox() -> Path:
+    """获取当前沙箱根目录。"""
+    return _current_sandbox if _current_sandbox else SANDBOX_DIR
 
 
 def _safe_path(path: str) -> Path:
     """把相对路径转成沙箱内的绝对路径，防止目录穿越。"""
-    p = (SANDBOX_DIR / path).resolve()
-    if not str(p).startswith(str(SANDBOX_DIR)):
+    sandbox = _get_sandbox()
+    p = (sandbox / path).resolve()
+    if not str(p).startswith(str(sandbox)):
         raise ValueError(f"路径越界：{path}")
     return p
 
@@ -99,7 +114,7 @@ def tool_search_content(keyword: str, dir: str = ".") -> dict:
                         if keyword in line
                     ][:5]
                     results.append({
-                        "file": str(file_path.relative_to(SANDBOX_DIR)),
+                        "file": str(file_path.relative_to(_get_sandbox())),
                         "matches": matched_lines,
                     })
                     if len(results) >= 10:
@@ -172,7 +187,7 @@ def tool_bash(command: str) -> dict:
         result = subprocess.run(
             command,
             shell=True,
-            cwd=str(SANDBOX_DIR),
+            cwd=str(_get_sandbox()),
             capture_output=True,
             text=True,
             timeout=10,
