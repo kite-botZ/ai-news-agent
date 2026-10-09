@@ -189,6 +189,89 @@ def tool_bash(command: str) -> dict:
 
 
 # ============================================================
+# 工具 6：fetch_rss（拉取 RSS 新闻）
+# ============================================================
+
+import xml.etree.ElementTree as ET
+
+import httpx
+
+# 允许的 RSS 源白名单（防止 SSRF 攻击）
+_RSS_WHITELIST = [
+    "https://www.ithome.com/rss/",
+    "https://rsshub.app/36kr/newsflashes",
+    "https://rsshub.app/jiqizhixin/latest",
+    "https://rsshub.app/qbitai/category/ai",
+]
+
+
+def tool_fetch_rss(url: str, limit: int = 10) -> dict:
+    """拉取 RSS 源，返回新闻列表。
+
+    参数：
+    - url：RSS 地址，必须在白名单内
+    - limit：最多返回几条
+    """
+    if url not in _RSS_WHITELIST:
+        return {"error": f"RSS 源不在白名单，可用：{_RSS_WHITELIST}"}
+
+    try:
+        resp = httpx.get(url, timeout=15, follow_redirects=True)
+        resp.raise_for_status()
+
+        # 解析 XML
+        root = ET.fromstring(resp.content)
+
+        # RSS 2.0 格式：<item>
+        items = root.findall(".//item")
+        if not items:
+            # Atom 格式：<entry>
+            items = root.findall(".//{http://www.w3.org/2005/Atom}entry")
+
+        news = []
+        for item in items[:limit]:
+            title = _get_text(item, "title")
+            link = _get_text(item, "link")
+            if not link:
+                # Atom 格式 link 在 href 属性里
+                link_el = item.find("{http://www.w3.org/2005/Atom}link")
+                if link_el is not None:
+                    link = link_el.get("href", "")
+            description = _get_text(item, "description") or _get_text(item, "summary")
+
+            # 清理 HTML 标签
+            if description:
+                import re
+                description = re.sub(r"<[^>]+>", "", description)  # 去掉标签
+                description = description.replace("&nbsp;", " ").strip()
+
+            news.append({
+                "title": title.strip() if title else "",
+                "link": link.strip() if link else "",
+                "summary": (description[:200] if description else "").strip(),
+            })
+        return {"url": url, "count": len(news), "news": news}
+    except httpx.TimeoutException:
+        return {"error": "请求超时"}
+    except ET.ParseError as e:
+        return {"error": f"XML 解析失败：{e}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _get_text(element, tag: str) -> str:
+    """从 XML 元素里取文本，兼容多种命名空间。"""
+    el = element.find(tag)
+    if el is not None and el.text:
+        return el.text
+    # 带命名空间的
+    for prefix in ["http://www.w3.org/2005/Atom", "http://purl.org/rss/1.0/"]:
+        el = element.find(f"{{{prefix}}}{tag}")
+        if el is not None and el.text:
+            return el.text
+    return ""
+
+# ============================================================
 # 工具 schema（给 LLM 看，OpenAI 兼容格式）
 # ============================================================
 
@@ -286,7 +369,31 @@ TOOLS_SCHEMA = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_rss",
+            "description": "拉取 RSS 新闻源，获取最新新闻列表。用于搜集 AI 相关新闻。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "RSS 源地址",
+                        "enum": _RSS_WHITELIST,
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "最多返回几条新闻，默认 10",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
 ]
+
+
 
 
 # ============================================================
@@ -299,6 +406,7 @@ TOOLS_REGISTRY = {
     "search_content": tool_search_content,
     "write_file": tool_write_file,
     "bash": tool_bash,
+    "fetch_rss": tool_fetch_rss,
 }
 
 
