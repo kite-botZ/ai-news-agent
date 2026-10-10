@@ -213,10 +213,18 @@ import httpx
 
 # 允许的 RSS 源白名单（防止 SSRF 攻击）
 _RSS_WHITELIST = [
+    # 科技综合
     "https://www.ithome.com/rss/",
-    # 下面是备选，如果访问不了不要用
-    # "https://rsshub.app/36kr/newsflashes",
-    # "https://rsshub.app/jiqizhixin/latest",
+    "https://www.ifanr.com/feed",
+    "https://sspai.com/feed",
+    # AI / 技术垂直
+    "https://www.qbitai.com/feed",
+    "https://www.leiphone.com/feed",
+    "https://www.infoq.cn/feed",
+    # 国外（网络不稳时可能失败）
+    "https://hnrss.org/frontpage",
+    "https://techcrunch.com/feed/",
+    "https://www.theverge.com/rss/index.xml",
 ]
 
 

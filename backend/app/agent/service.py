@@ -42,6 +42,7 @@ def generate_brief_for_user(username: str, verbose: bool = False) -> dict:
 
     # 构造 user message，把 username 传给 Agent
     today = datetime.now().strftime("%Y-%m-%d")
+    now_ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     user_message = (
         f"请为用户名 {username} 生成今天（{today}）的 AI 新闻简报。\n\n"
         f"注意：所有文件路径都基于该用户的目录，不要加任何前缀。\n"
@@ -57,7 +58,8 @@ def generate_brief_for_user(username: str, verbose: bool = False) -> dict:
         f"{user_message}\n\n"
         f"重要：所有工具路径都相对于该用户的目录，不要加任何前缀。"
         f"比如读偏好用 'preferences.json'，"
-        f"存简报到 'briefs/{today}.md'。"
+        f"存简报到 'briefs/{now_ts}.md'。\n\n"
+        f"生成简报时，请用这个精确的文件名，避免同一天生成多次时互相覆盖。"
     )
 
     result = run_react(
@@ -67,10 +69,17 @@ def generate_brief_for_user(username: str, verbose: bool = False) -> dict:
         sandbox_dir=user_dir,   # 传入该用户的目录作为沙箱
     )
 
-    # 找保存的文件路径
-    brief_file = user_dir / "briefs" / f"{today}.md"
-    saved_path = str(brief_file.relative_to(Path(DATA_DIR))) if brief_file.exists() else None
-
+    # 找保存的文件路径：扫描 briefs 目录，找今天最新的文件
+    briefs_dir = user_dir / "briefs"
+    saved_path = None
+    if briefs_dir.exists():
+        today_files = sorted(
+            [f for f in briefs_dir.glob(f"{today}*.md")],
+            key=lambda f: f.stat().st_mtime,
+            reverse=True,
+        )
+        if today_files:
+            saved_path = str(today_files[0].relative_to(Path(DATA_DIR)))
     # 更新偏好里的 last_generated
     prefs_file = user_dir / "preferences.json"
     if prefs_file.exists():
