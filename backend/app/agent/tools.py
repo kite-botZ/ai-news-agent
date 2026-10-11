@@ -33,7 +33,12 @@ _current_sandbox: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
 
 
 def set_sandbox(sandbox_dir: Path | None):
-    """设置当前会话的沙箱根目录。None 表示回到默认 data/。"""
+    """设置当前会话的沙箱根目录。None 表示回到默认 data/。
+
+    ⚠️ 只能在**同一个线程、同一个同步块**里配合工具调用使用（测试里常用）。
+    它挡不住线程池跳转 —— 见 execute_tool 的说明。生产路径请走
+    execute_tool(sandbox_dir=...) 显式传参。
+    """
     _current_sandbox.set(sandbox_dir)
 
 
@@ -447,14 +452,34 @@ TOOLS_REGISTRY = {
 }
 
 
-def execute_tool(name: str, args: dict) -> dict:
-    """执行一个工具，异常统一返回 error。"""
+def execute_tool(name: str, args: dict, sandbox_dir: Path | None = None) -> dict:
+    """执行一个工具，异常统一返回 error。
+
+    sandbox_dir 必须由调用方**显式传入**，不能指望外面先调 set_sandbox()：
+
+    Starlette 消费同步生成器（StreamingResponse）走的是 iterate_in_threadpool，
+    每调用一次 next() 就是一次新的线程池调度，而 anyio 每次都是从事件循环线程
+    重新拷一份上下文。于是生成器内部 set 的值在下一次恢复时就没了，
+    _get_sandbox() 会静默退回全局的 data/ —— 表现为「读不到本用户的 preferences.json」，
+    更糟的是沙箱隔离失效，A 用户能读到 B 用户的文件。
+
+    这里 set 之后**紧跟着**调用工具函数，同一个线程、中间没有线程池跳转，
+    所以 contextvar 一定可见。
+    """
     fn = TOOLS_REGISTRY.get(name)
     if not fn:
         return {"error": f"未知工具：{name}"}
+
+    # 没显式传就沿用上下文里的沙箱（set_sandbox 设的那个，默认 data/）。
+    # 注意不能写成 "无条件 set(sandbox_dir)"：那样默认值 None 会把
+    # set_sandbox() 设好的沙箱一起覆盖掉，调用方会静默落到 data/。
+    token = _current_sandbox.set(sandbox_dir) if sandbox_dir is not None else None
     try:
         return fn(**args)
     except TypeError as e:
         return {"error": f"参数错误：{e}"}
     except Exception as e:
         return {"error": f"执行失败：{e}"}
+    finally:
+        if token is not None:
+            _current_sandbox.reset(token)

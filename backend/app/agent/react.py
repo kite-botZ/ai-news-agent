@@ -13,13 +13,17 @@
 
 支持：
 - sandbox_dir：指定工具操作的沙箱根目录（比如某个用户的目录）
+
+注意 sandbox_dir 是**逐次显式传给 execute_tool 的**，不是靠全局状态。
+原因见 tools.execute_tool 的注释：流式那条路径每 yield 一次就换一次线程池
+调度和上下文，生成器里 set 的全局沙箱根本活不到下一次恢复。
 """
 
 import json
 from pathlib import Path
 
 from app.agent.llm import chat, chat_stream
-from app.agent.tools import TOOLS_SCHEMA, execute_tool, set_sandbox
+from app.agent.tools import TOOLS_SCHEMA, execute_tool
 from app.config import MAX_ITERATIONS
 
 
@@ -45,9 +49,6 @@ def run_react(
     }
     """
 
-    # 设置沙箱根目录
-    set_sandbox(sandbox_dir)
-
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_message},
@@ -56,85 +57,81 @@ def run_react(
     tool_call_records = []
     iterations = 0
 
-    try:
-        for i in range(MAX_ITERATIONS):
-            iterations = i + 1
+    for i in range(MAX_ITERATIONS):
+        iterations = i + 1
+
+        if verbose:
+            print(f"\n--- 第 {iterations} 轮 ---")
+
+        # 1. 调用模型
+        response = chat(messages=messages, tools=TOOLS_SCHEMA)
+        message = response.choices[0].message
+
+        # 2. 检查是否有工具调用
+        tool_calls = message.tool_calls or []
+
+        # 把助手的回复加入历史
+        assistant_msg = {"role": "assistant", "content": message.content or ""}
+        if tool_calls:
+            assistant_msg["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments,
+                    },
+                }
+                for tc in tool_calls
+            ]
+        messages.append(assistant_msg)
+
+        # 3. 没有工具调用 → 结束
+        if not tool_calls:
+            if verbose:
+                print("模型没有调用工具，返回最终回答")
+            return {
+                "answer": message.content,
+                "tool_calls": tool_call_records,
+                "iterations": iterations,
+            }
+
+        # 4. 有工具调用 → 逐个执行
+        for tc in tool_calls:
+            tool_name = tc.function.name
+            try:
+                tool_args = json.loads(tc.function.arguments)
+            except json.JSONDecodeError:
+                tool_args = {}
 
             if verbose:
-                print(f"\n--- 第 {iterations} 轮 ---")
+                print(f"调用工具：{tool_name}({tool_args})")
 
-            # 1. 调用模型
-            response = chat(messages=messages, tools=TOOLS_SCHEMA)
-            message = response.choices[0].message
+            # 执行工具
+            result = execute_tool(tool_name, tool_args, sandbox_dir=sandbox_dir)
 
-            # 2. 检查是否有工具调用
-            tool_calls = message.tool_calls or []
+            if verbose:
+                print(f"工具返回：{result}")
 
-            # 把助手的回复加入历史
-            assistant_msg = {"role": "assistant", "content": message.content or ""}
-            if tool_calls:
-                assistant_msg["tool_calls"] = [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        },
-                    }
-                    for tc in tool_calls
-                ]
-            messages.append(assistant_msg)
+            tool_call_records.append({
+                "name": tool_name,
+                "args": tool_args,
+                "result": result,
+            })
 
-            # 3. 没有工具调用 → 结束
-            if not tool_calls:
-                if verbose:
-                    print("模型没有调用工具，返回最终回答")
-                return {
-                    "answer": message.content,
-                    "tool_calls": tool_call_records,
-                    "iterations": iterations,
-                }
+            # 把工具结果加入历史
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": json.dumps(result, ensure_ascii=False),
+            })
 
-            # 4. 有工具调用 → 逐个执行
-            for tc in tool_calls:
-                tool_name = tc.function.name
-                try:
-                    tool_args = json.loads(tc.function.arguments)
-                except json.JSONDecodeError:
-                    tool_args = {}
-
-                if verbose:
-                    print(f"调用工具：{tool_name}({tool_args})")
-
-                # 执行工具
-                result = execute_tool(tool_name, tool_args)
-
-                if verbose:
-                    print(f"工具返回：{result}")
-
-                tool_call_records.append({
-                    "name": tool_name,
-                    "args": tool_args,
-                    "result": result,
-                })
-
-                # 把工具结果加入历史
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": json.dumps(result, ensure_ascii=False),
-                })
-
-        # 达到最大轮数还没结束
-        return {
-            "answer": "（已达到最大工具调用轮数，未能生成最终回答）",
-            "tool_calls": tool_call_records,
-            "iterations": iterations,
-        }
-    finally:
-        # 恢复默认沙箱，避免影响后续调用
-        set_sandbox(None)
+    # 达到最大轮数还没结束
+    return {
+        "answer": "（已达到最大工具调用轮数，未能生成最终回答）",
+        "tool_calls": tool_call_records,
+        "iterations": iterations,
+    }
 
 
 # ============================================================
@@ -157,8 +154,6 @@ def run_react_stream_realtime(
     - {"type": "done", "content": "..."}              最终完整回答
     - {"type": "error", "content": "..."}
     """
-
-    set_sandbox(sandbox_dir)
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -216,7 +211,9 @@ def run_react_stream_realtime(
 
                 yield {"type": "tool_call", "name": name, "args": args}
 
-                result = execute_tool(name, args)
+                # 沙箱在这里逐次显式传入。上面那个 yield 之后可能已经换过线程了，
+                # 所以绝不能靠"进入生成器时设一次全局沙箱"。
+                result = execute_tool(name, args, sandbox_dir=sandbox_dir)
 
                 yield {"type": "tool_result", "name": name, "result": result}
 
@@ -231,5 +228,3 @@ def run_react_stream_realtime(
 
     except Exception as e:
         yield {"type": "error", "content": str(e)}
-    finally:
-        set_sandbox(None)

@@ -13,7 +13,9 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import anyio
 import pytest
+from starlette.concurrency import iterate_in_threadpool
 
 from app.agent import react
 from app.agent.tools import _get_sandbox, set_sandbox
@@ -69,12 +71,15 @@ class ScriptedStream:
 
 @pytest.fixture
 def sandbox(tmp_path):
+    """一个模拟的用户目录（含 preferences.json）。
+
+    这里**故意不调 set_sandbox**：沙箱现在是 execute_tool 的显式参数，不是全局状态。
+    留着那句反而会把坑盖住——见文件末尾那条回归用例。
+    """
     (tmp_path / "preferences.json").write_text(
         '{"keywords": ["AI"]}', encoding="utf-8"
     )
-    set_sandbox(tmp_path)
-    yield tmp_path
-    set_sandbox(None)
+    return tmp_path
 
 
 # ============================================================
@@ -174,20 +179,38 @@ def test_stops_at_max_iterations(monkeypatch, sandbox):
 
 
 # ============================================================
-# 沙箱必须在 finally 里恢复
+# 沙箱：靠显式传参，不靠全局状态
 # ============================================================
 
-def test_sandbox_is_restored_after_run(monkeypatch, sandbox):
+def test_tools_run_inside_the_given_sandbox(monkeypatch, sandbox):
+    """run_react(sandbox_dir=X) 时，工具必须真的在 X 里操作。"""
+    llm = ScriptedLLM([
+        _response(tool_calls=[_tool_call("c1", "read_file", {"path": "preferences.json"})]),
+        _response(content="done"),
+    ])
+    monkeypatch.setattr(react, "chat", llm)
+
+    result = react.run_react(system_prompt="s", user_message="u", sandbox_dir=sandbox)
+
+    tool_result = result["tool_calls"][0]["result"]
+    assert "error" not in tool_result, f"沙箱没生效：{tool_result}"
+    assert "AI" in tool_result["content"]
+
+
+def test_run_react_leaves_global_sandbox_untouched(monkeypatch, sandbox):
+    """循环不该去动全局沙箱——动了就会在并发时串到别人的目录。"""
+    set_sandbox(None)
     llm = ScriptedLLM([_response(content="ok")])
     monkeypatch.setattr(react, "chat", llm)
 
     react.run_react(system_prompt="s", user_message="u", sandbox_dir=sandbox)
 
-    # 不恢复的话，下一个请求可能操作到上一个用户的目录
     assert _get_sandbox() == Path(DATA_DIR)
 
 
-def test_sandbox_is_restored_even_if_llm_raises(monkeypatch, sandbox):
+def test_run_react_leaves_global_sandbox_untouched_on_error(monkeypatch, sandbox):
+    set_sandbox(None)
+
     def boom(messages, tools=None, **kwargs):
         raise RuntimeError("模型挂了")
 
@@ -230,3 +253,63 @@ def test_stream_emits_text_tool_events_then_done(monkeypatch, sandbox):
     assert any(
         e["type"] == "text" and e["content"] == "先看看目录。" for e in events
     )
+
+
+# ============================================================
+# 回归：走 HTTP SSE 时沙箱曾经完全失效
+# ============================================================
+
+def test_sandbox_survives_starlette_threadpool(monkeypatch, tmp_path):
+    """这条用例存在的唯一理由：上面那些用 list() 直接消费生成器的测试**抓不到**这个坑。
+
+    前端真正走的是 HTTP SSE，Starlette 用 iterate_in_threadpool 消费同步生成器，
+    每调用一次 next() 就是一次新的线程池调度，而 anyio 每次都从事件循环线程
+    重新拷一份上下文。结果：生成器里 set 的全局沙箱在下一次恢复时就没了，
+    _get_sandbox() 静默退回 data/。
+
+    实测表现（改之前，走真 HTTP）：
+        📖 正在读取偏好…
+        ⚠️ read_file 失败：文件不存在：preferences.json
+    模型读不到偏好，却照样硬写了一份简报 —— 不报错，只是内容不对。
+    更糟的是沙箱隔离失效：A 用户可以读到 B 用户的文件。
+
+    所以这里必须用和 Starlette **一模一样**的方式消费，否则等于没测。
+    """
+    user_dir = tmp_path / "users" / "alice"
+    user_dir.mkdir(parents=True)
+    (user_dir / "preferences.json").write_text(
+        '{"keywords": ["AI", "大模型"]}', encoding="utf-8"
+    )
+
+    stream = ScriptedStream([
+        [
+            {"type": "tool_calls", "tool_calls": [
+                {"id": "c1", "name": "read_file",
+                 "arguments": '{"path": "preferences.json"}'},
+            ]},
+        ],
+        [{"type": "content", "text": "ok"}],
+    ])
+    monkeypatch.setattr(react, "chat_stream", stream)
+
+    # 确保全局沙箱处于默认值，否则"读到"可能只是上一次测试的残留
+    set_sandbox(None)
+
+    results = []
+
+    async def consume():
+        async for event in iterate_in_threadpool(
+            react.run_react_stream_realtime(
+                system_prompt="s", user_message="u", sandbox_dir=user_dir,
+            )
+        ):
+            if event["type"] == "tool_result":
+                results.append(event["result"])
+
+    anyio.run(consume)
+
+    assert len(results) == 1
+    assert "error" not in results[0], (
+        f"沙箱没跟着生成器走，工具读的是 data/ 而不是用户目录：{results[0]}"
+    )
+    assert "大模型" in results[0]["content"]

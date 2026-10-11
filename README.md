@@ -20,7 +20,7 @@
 | 前端 | Vue 3 + TypeScript + Vite + vue-router + axios |
 | 生成时机 | 进入新闻页时按需自动生成（当天已有则跳过） |
 | 存储 | 文件系统（每用户一个目录），无数据库 |
-| 测试 | pytest，91 个用例，不联网、不调模型 |
+| 测试 | pytest，96 个用例，不联网、不调模型 |
 
 ---
 
@@ -215,7 +215,15 @@ ReAct 循环：
 ### 安全设计
 
 - **沙箱**：所有文件操作限制在 `data/users/<username>/` 内，`_safe_path()` 用 `resolve()` + `relative_to()` 双重校验防目录穿越
-- **并发隔离**：当前沙箱用 `contextvars` 保存，多个请求互不干扰
+- **沙箱靠显式传参，不靠全局状态**：`execute_tool(name, args, sandbox_dir=...)` 逐次传入，
+  底层仍用 `contextvars` 兜住 `_safe_path()`，但 `set` 和工具调用在同一个同步块里，
+  中间没有线程池跳转。**这里踩过一个大坑**：早先是「进生成器时 `set_sandbox()` 设一次」，
+  而 Starlette 消费同步生成器走 `iterate_in_threadpool`——每 `next()` 一次就是一次新的
+  线程池调度，`anyio` 每次都从事件循环线程重新拷一份上下文。于是生成器里设的沙箱
+  下一次恢复就没了，静默退回 `data/`：表现为 **Agent 读不到本用户的 `preferences.json`**，
+  却照样硬写一份简报（不报错，只是内容不对）；更糟的是隔离失效，A 用户能读到 B 用户的文件。
+  回归用例见 `tests/test_react.py::test_sandbox_survives_starlette_threadpool`——
+  它必须用和 Starlette **一样的方式**消费生成器，用 `list()` 直接消费是抓不到的
 - **命令白名单**：`bash` 只允许 `ls/cat/echo/pwd/date/wc/head/tail/grep/find`（Windows 下自动映射成 `dir/type`，并把 GNU 短选项翻成 cmd 的写法，如 `grep -i` → `findstr /i`）
 - **参数也要过沙箱**：白名单只管得住命令名。`cat ../../.env` 的命令名是合法的 `cat`，但参数能读到沙箱外的 API Key——所以每个路径参数都要再走一遍 `_safe_path`
 - **禁止管道 / 重定向 / 命令连接符**：`echo hi; rm -rf /` 的命令名同样是合法的 `echo`，所以 `; | & > <` 和变量展开一律拒绝
@@ -251,7 +259,7 @@ ReAct 循环：
 
 ```bash
 cd backend
-python -m pytest        # 91 个用例，约 1 秒
+python -m pytest        # 96 个用例，约 1 秒
 ```
 
 全部**不联网、不调模型**，所以可以随便跑、不花钱：
@@ -259,10 +267,10 @@ python -m pytest        # 91 个用例，约 1 秒
 | 文件 | 覆盖什么 |
 |---|---|
 | `tests/test_sandbox.py` | 目录穿越（相对路径、绝对路径、`a/../` 绕回）全部被拦，并且验证越界文件**确实没有被创建出来** |
-| `tests/test_tools.py` | bash 白名单 + 参数沙箱 + 管道拦截、`fetch_rss` 白名单（防 SSRF）、schema 与实现一一对应、缺参数时的兜底 |
+| `tests/test_tools.py` | bash 白名单 + 参数沙箱 + 管道拦截、`fetch_rss` 白名单（防 SSRF）、schema 与实现一一对应、缺参数时的兜底、显式沙箱与全局沙箱的优先级 |
 | `tests/test_users.py` | 用户名与简报文件名两条正则（用户可控字符串直接拼进路径的地方）、偏好字段白名单、简报排序 |
 | `tests/test_rss.py` | 多源合并必须**按源轮流交错**（否则后面的源会被 `max_total` 整段切掉）、单源失败不影响整体、按 link 去重 |
-| `tests/test_react.py` | ReAct 循环的三个出口（直接回答 / 调完工具回答 / 撞到 `MAX_ITERATIONS`）、`tool_call_id` 配对、沙箱在 `finally` 里恢复 |
+| `tests/test_react.py` | ReAct 循环的三个出口（直接回答 / 调完工具回答 / 撞到 `MAX_ITERATIONS`）、`tool_call_id` 配对、沙箱跨线程池仍然有效（回归） |
 
 `test_react.py` 把 `react.chat` 换成一个按脚本应答的假 LLM，循环就退化成一个普通状态机，
 每条分支都能单独断言——测 LLM 应用不等于必须真的调 API。

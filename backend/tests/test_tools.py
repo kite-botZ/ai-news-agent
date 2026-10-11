@@ -157,6 +157,49 @@ def test_missing_required_arg_returns_error():
     assert "参数错误" in result["error"]
 
 
+# ============================================================
+# 沙箱：显式传参与 set_sandbox 的关系
+# ============================================================
+
+def test_explicit_sandbox_wins_over_ambient(sandbox, tmp_path):
+    """显式传 sandbox_dir 时以它为准。"""
+    other = tmp_path / "other_user"
+    other.mkdir()
+    (other / "note.txt").write_text("别人的目录", encoding="utf-8")
+
+    result = execute_tool(
+        "read_file", {"path": "note.txt"}, sandbox_dir=other
+    )
+
+    assert result["content"] == "别人的目录"
+
+
+def test_omitting_sandbox_keeps_ambient(sandbox):
+    """不传 sandbox_dir 时必须沿用 set_sandbox 设的沙箱。
+
+    这里曾经埋着一个坑：写成无条件 set(sandbox_dir)，默认值 None
+    会把 set_sandbox() 设好的沙箱一起覆盖掉，于是所有调用静默落到 data/。
+    """
+    (sandbox / "note.txt").write_text("我的目录", encoding="utf-8")
+
+    result = execute_tool("read_file", {"path": "note.txt"})
+
+    assert "error" not in result
+    assert result["content"] == "我的目录"
+
+
+def test_explicit_sandbox_does_not_leak_afterwards(sandbox, tmp_path):
+    """调用结束后必须恢复回原沙箱，否则下一个用户会串到别人的目录。"""
+    other = tmp_path / "other_user"
+    other.mkdir()
+
+    execute_tool("list_dir", {}, sandbox_dir=other)
+
+    # 环境里的沙箱仍是 fixture 设的那个
+    (sandbox / "note.txt").write_text("我的目录", encoding="utf-8")
+    assert execute_tool("read_file", {"path": "note.txt"})["content"] == "我的目录"
+
+
 def test_read_file_truncates_long_content(sandbox):
     (sandbox / "big.txt").write_text("字" * 8000, encoding="utf-8")
     result = tool_read_file("big.txt")
