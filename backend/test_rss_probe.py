@@ -1,6 +1,7 @@
-"""探测一批常见的 RSS 源，看哪些能通。
+"""手工测试：探测一批常见的 RSS 源，看哪些能通。
 
 不改项目代码，只是临时验证网络和源可用性。
+直接运行：python test_rss_probe.py
 """
 
 import httpx
@@ -55,28 +56,33 @@ def probe(name: str, url: str) -> tuple[str, bool, str]:
         return (name, False, f"错误：{type(e).__name__}")
 
 
-print(f"探测 {len(CANDIDATES)} 个 RSS 源，超时 10 秒\n")
+def main() -> None:
+    print(f"探测 {len(CANDIDATES)} 个 RSS 源，超时 10 秒\n")
 
-ok_list = []
-fail_list = []
+    ok_list = []
+    fail_list = []
 
-for name, url in CANDIDATES:
-    name, ok, msg = probe(name, url)
-    status = "✅" if ok else "❌"
-    print(f"{status} {name:14s} {msg}")
-    print(f"     {url}")
-    if ok:
-        ok_list.append((name, url))
-    else:
-        fail_list.append((name, url))
+    for name, url in CANDIDATES:
+        name, ok, msg = probe(name, url)
+        status = "✅" if ok else "❌"
+        print(f"{status} {name:14s} {msg}")
+        print(f"     {url}")
+        if ok:
+            ok_list.append((name, url))
+        else:
+            fail_list.append((name, url))
+        print()
+
+    print("=" * 60)
+    print(f"✅ 可用的源（{len(ok_list)} 个）：")
+    for name, url in ok_list:
+        print(f"   - {name}: {url}")
+
     print()
+    print(f"❌ 不可用的源（{len(fail_list)} 个）：")
+    for name, url in fail_list:
+        print(f"   - {name}: {url}")
 
-print("=" * 60)
-print(f"✅ 可用的源（{len(ok_list)} 个）：")
-for name, url in ok_list:
-    print(f"   - {name}: {url}")
 
-print()
-print(f"❌ 不可用的源（{len(fail_list)} 个）：")
-for name, url in fail_list:
-    print(f"   - {name}: {url}")
+if __name__ == "__main__":
+    main()
