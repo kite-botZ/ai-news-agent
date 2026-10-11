@@ -4,7 +4,6 @@ uvicorn==0.54.0
 openai==3.26.1
 httpx==0.28.1
 python-dotenv==1.2.4
-APScheduler==3.11.0
 
 # ==================== 间接依赖（由上面自动安装，锁定版本）====================
 annotated-doc==0.0.5
@@ -23,5 +22,3 @@ starlette==1.7.0
 truststore==0.10.4
 typing-inspection==0.4.4
 typing_extensions==4.16.0
-tzdata==2026.5
-tzlocal==5.4.4

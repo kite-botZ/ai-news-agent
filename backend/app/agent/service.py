@@ -13,7 +13,6 @@ from typing import Generator
 from app.agent.prompts import NEWS_AGENT_PROMPT
 from app.agent.react import run_react, run_react_stream_realtime
 from app.config import DATA_DIR
-from app.users import list_users
 
 USERS_DIR = Path(DATA_DIR) / "users"
 
@@ -206,26 +205,3 @@ def generate_brief_for_user(username: str) -> dict:
         "iterations": result["iterations"],
         "saved_path": saved_path,
     }
-
-
-# ============================================================
-# 批量：定时任务调用
-# ============================================================
-
-def generate_all_briefs() -> list[dict]:
-    """为所有用户各生成一份今天的简报。
-
-    单个用户失败不影响其他用户，失败信息记在返回值里。
-    """
-    results = []
-    for username in list_users():
-        try:
-            r = generate_brief_for_user(username)
-            results.append({
-                "username": username,
-                "ok": True,
-                "saved_path": r.get("saved_path"),
-            })
-        except Exception as e:
-            results.append({"username": username, "ok": False, "error": str(e)})
-    return results

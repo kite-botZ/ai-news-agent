@@ -125,17 +125,6 @@ def get_brief(username: str, date: str) -> str:
     return brief_file.read_text(encoding="utf-8")
 
 
-def list_users() -> list[str]:
-    """列出所有已创建的用户名（用于定时批量生成简报）。"""
-    if not USERS_DIR.exists():
-        return []
-    return sorted(
-        p.name
-        for p in USERS_DIR.iterdir()
-        if p.is_dir() and (p / "preferences.json").exists()
-    )
-
-
 # ============================================================
 # 内部工具
 # ============================================================

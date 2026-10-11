@@ -24,15 +24,6 @@ CORS_ORIGINS = [
     if o.strip()
 ]
 
-# ==================== 定时任务 ====================
-# 是否开启「每天自动生成简报」
-SCHEDULER_ENABLED = os.getenv("SCHEDULER_ENABLED", "true").lower() in (
-    "1", "true", "yes", "on",
-)
-# 每天几点执行（24 小时制）
-BRIEF_SCHEDULE_HOUR = int(os.getenv("BRIEF_SCHEDULE_HOUR", "8"))
-BRIEF_SCHEDULE_MINUTE = int(os.getenv("BRIEF_SCHEDULE_MINUTE", "0"))
-
 # 数据目录（工具操作的沙箱根目录）
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
