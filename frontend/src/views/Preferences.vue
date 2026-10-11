@@ -61,7 +61,8 @@
         <p v-if="message" :class="['message', messageType]">{{ message }}</p>
 
         <div class="tips">
-          <p>💡 保存偏好后，回到用户首页点击"生成今日简报"触发 AI</p>
+          <p>💡 首页在当天还没有简报时会自动生成一份</p>
+          <p>💡 改完偏好想立刻生效，回首页点「✨ 生成今日简报」重新生成</p>
         </div>
       </div>
     </div>

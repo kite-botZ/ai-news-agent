@@ -5,13 +5,46 @@
 
 from openai import OpenAI
 
-from app.config import MODEL_NAME, SILICONFLOW_API_KEY, SILICONFLOW_BASE_URL
+from app.config import (
+    ENABLE_THINKING,
+    MODEL_NAME,
+    SILICONFLOW_API_KEY,
+    SILICONFLOW_BASE_URL,
+    THINKING_BUDGET,
+)
 
 # 全局 client（复用连接）
 _client = OpenAI(
     api_key=SILICONFLOW_API_KEY,
     base_url=SILICONFLOW_BASE_URL,
 )
+
+
+def _build_kwargs(messages: list[dict], tools: list[dict] | None, stream: bool) -> dict:
+    """拼出一次请求的参数。普通调用和流式调用共用。"""
+    kwargs = {
+        "model": MODEL_NAME,
+        "messages": messages,
+        "stream": stream,
+    }
+
+    if tools:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = "auto"  # 让模型自己决定是否调用工具
+
+    # enable_thinking / thinking_budget 都不是 OpenAI 标准参数，只能走 extra_body。
+    #
+    # 默认给思考一个预算上限，而不是关掉：实测全关之后模型会失去规划能力，
+    # 一路调 fetch_rss 却永远不收手写文件，任务直接失败。
+    extra: dict = {}
+    if not ENABLE_THINKING:
+        extra["enable_thinking"] = False
+    elif THINKING_BUDGET:
+        extra["thinking_budget"] = THINKING_BUDGET
+    if extra:
+        kwargs["extra_body"] = extra
+
+    return kwargs
 
 
 def chat(messages: list[dict], tools: list[dict] | None = None, stream: bool = False):
@@ -24,16 +57,7 @@ def chat(messages: list[dict], tools: list[dict] | None = None, stream: bool = F
 
     返回：OpenAI 的 response 对象
     """
-    kwargs = {
-        "model": MODEL_NAME,
-        "messages": messages,
-        "stream": stream,
-    }
-    if tools:
-        kwargs["tools"] = tools
-        kwargs["tool_choice"] = "auto"  # 让模型自己决定是否调用工具
-
-    return _client.chat.completions.create(**kwargs)
+    return _client.chat.completions.create(**_build_kwargs(messages, tools, stream))
 
 
 def simple_chat(prompt: str) -> str:
@@ -49,16 +73,9 @@ def chat_stream(messages: list[dict], tools: list[dict] | None = None):
     - {"type": "content", "text": "..."}         模型输出的一段文字
     - {"type": "tool_calls", "tool_calls": [...]} 模型要调用的工具（完整）
     """
-    kwargs = {
-        "model": MODEL_NAME,
-        "messages": messages,
-        "stream": True,
-    }
-    if tools:
-        kwargs["tools"] = tools
-        kwargs["tool_choice"] = "auto"
-
-    stream = _client.chat.completions.create(**kwargs)
+    stream = _client.chat.completions.create(
+        **_build_kwargs(messages, tools, stream=True)
+    )
 
     # 累积 tool_calls（流式下 tool_calls 会分片）
     tool_calls_buffer: list[dict] = []

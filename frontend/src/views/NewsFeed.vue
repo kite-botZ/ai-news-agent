@@ -83,13 +83,27 @@
             ⏹ 停止生成
           </button>
 
-          <!-- 简报正文（打字机效果） -->
-          <div v-if="displayContent || generating" class="brief-panel">
+          <!-- 生成中：工具调用进度；生成完：从文件读回的简报正文 -->
+          <div v-if="generating || progressLog.length || briefContent" class="brief-panel">
             <div class="brief-head">
               <span>{{ generating ? '📝 正在生成简报…' : '📄 简报内容' }}</span>
               <span v-if="generating" class="typing-cursor">▌</span>
             </div>
-            <div class="brief-text markdown" v-html="renderedBrief"></div>
+
+            <ul v-if="generating" class="progress-list">
+              <li v-for="(line, i) in progressLog" :key="i">{{ line }}</li>
+              <li v-if="streamText.trim()" class="progress-done">{{ streamText.trim() }}</li>
+            </ul>
+
+            <div
+              v-else-if="briefContent"
+              class="brief-text markdown"
+              v-html="renderedBrief"
+            ></div>
+
+            <ul v-else class="progress-list">
+              <li v-for="(line, i) in progressLog" :key="i">{{ line }}</li>
+            </ul>
           </div>
 
           <!-- 历史简报 -->
@@ -185,16 +199,21 @@ function sourceName(item: any) {
 
 // ==================== AI 简报生成 ====================
 const generating = ref(false)
-const displayContent = ref('')
+const progressLog = ref<string[]>([])   // 工具调用进度（人话），生成过程中实时显示
+const streamText = ref('')              // 模型输出的文字（正常情况下只有一句总结）
+const briefContent = ref('')            // 简报正文——生成完从后端文件读回来
 let abortController: AbortController | null = null
 
 async function generateBrief() {
   if (generating.value) return
 
   generating.value = true
-  displayContent.value = ''
+  progressLog.value = []
+  streamText.value = ''
+  briefContent.value = ''
 
   abortController = new AbortController()
+  let doneEvent: any = null
 
   try {
     const response = await fetch(
@@ -229,7 +248,8 @@ async function generateBrief() {
 
         try {
           const event = JSON.parse(jsonStr)
-          handleEvent(event)
+          if (event.type === 'done') doneEvent = event
+          else handleEvent(event)
         } catch (e) {
           console.warn('解析事件失败：', jsonStr)
         }
@@ -237,32 +257,56 @@ async function generateBrief() {
     }
   } catch (e: any) {
     if (e.name === 'AbortError') {
-      displayContent.value += '\n\n⏹ 已停止生成'
+      progressLog.value.push('⏹ 已停止生成')
     } else {
-      displayContent.value += `\n\n❌ ${e.message || '生成失败'}`
+      progressLog.value.push(`❌ ${e.message || '生成失败'}`)
     }
   } finally {
-    generating.value = false
     abortController = null
     await loadBriefs()
+    if (doneEvent) await showGeneratedBrief(doneEvent)
+    generating.value = false
   }
 }
 
 function handleEvent(event: any) {
-  if (event.type === 'status' || event.type === 'progress' || event.type === 'tool_call' || event.type === 'tool_result') {
-    // 进度不显示在面板（只显示正文）
-    return
+  if (event.type === 'status' || event.type === 'progress') {
+    // 后端一直在推这些进度事件，以前前端直接丢掉了，面板只能干等
+    if (event.content) progressLog.value.push(event.content)
   } else if (event.type === 'text') {
-    // ★ 模型逐段推来的文字 → 直接追加
-    displayContent.value += event.content
+    streamText.value += event.content
   } else if (event.type === 'error') {
-    displayContent.value += `\n\n❌ ${event.content}`
-  } else if (event.type === 'done') {
-    // 完成 → 弹窗
-    modalDate.value = formatDate(new Date().toISOString().split('T')[0])
-    modalContent.value = displayContent.value || event.content || '（内容为空）'
-    showModal.value = true
+    progressLog.value.push(`❌ ${event.content}`)
   }
+}
+
+/**
+ * 生成完成：正文从后端存好的文件里读回来。
+ *
+ * 以前这里是拿模型最后一条回复当正文显示的，代价是模型要把整份简报复述一遍
+ * （实测 957 字、约 32 秒）。简报本来就写进文件了，直接读文件既准又省。
+ */
+async function showGeneratedBrief(event: any) {
+  if (event.brief_id) {
+    try {
+      const data = await request.get(
+        `/users/${username}/briefs/${event.brief_id}`
+      ) as any
+      briefContent.value = data.content || ''
+      modalDate.value = formatDate(event.brief_id)
+    } catch (e) {
+      console.error('读取简报文件失败：', e)
+    }
+  }
+
+  // 兜底：文件没读到（模型没写成功）就用模型自己输出的文字
+  if (!briefContent.value) {
+    briefContent.value = streamText.value || event.content || '（内容为空）'
+    modalDate.value = formatDate(localToday())
+  }
+
+  modalContent.value = briefContent.value
+  showModal.value = true
 }
 
 /** 手动停止生成（中断 SSE 连接） */
@@ -271,7 +315,7 @@ function stopGenerate() {
 }
 
 // 简报正文的 Markdown 渲染结果
-const renderedBrief = computed(() => renderMarkdown(displayContent.value))
+const renderedBrief = computed(() => renderMarkdown(briefContent.value))
 
 // ==================== 历史简报 ====================
 const briefs = ref<Array<{ date: string; size: number }>>([])
@@ -618,6 +662,31 @@ onMounted(async () => {
   color: #2d4238;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* 生成过程中的工具调用进度 */
+.progress-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #5a6b7c;
+}
+.progress-list li {
+  animation: fadeIn 0.3s;
+}
+.progress-list li:nth-child(even) {
+  padding-left: 14px;
+  color: #9aa8b8;
+}
+.progress-done {
+  margin-top: 4px;
+  color: #2d8f5b !important;
+  font-weight: 600;
 }
 
 /* ==================== 历史简报 ==================== */

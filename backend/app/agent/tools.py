@@ -276,17 +276,31 @@ def tool_bash(command: str) -> dict:
 # 工具 6：fetch_rss（拉取 RSS 新闻）
 # ============================================================
 
-def tool_fetch_rss(url: str, limit: int = 10) -> dict:
-    """拉取 RSS 源，返回新闻列表。
+# 模型在写简报时真正用得上的字段。
+# image 是给前端卡片用的长 URL，source 和 source_name 内容重复——都裁掉。
+# 这些字段会留在消息历史里，之后每一轮都要重新 prefill，裁掉能省不少时间。
+_NEWS_FIELDS_FOR_LLM = ("title", "link", "summary", "source_name")
 
-    抓取与解析逻辑统一放在 app/rss.py，这里只做转发，
+
+def tool_fetch_rss(url: str, limit: int = 5) -> dict:
+    """拉取 RSS 源，返回新闻列表（只保留模型用得上的字段）。
+
+    抓取与解析逻辑统一放在 app/rss.py，这里只做转发 + 瘦身，
     保证 Agent 工具和 /api/news 接口用的是同一套实现。
 
     参数：
     - url：RSS 地址，必须在白名单内
     - limit：最多返回几条
     """
-    return fetch_feed(url, limit=limit)
+    result = fetch_feed(url, limit=limit)
+    if "error" in result:
+        return result
+
+    news = [
+        {key: item[key] for key in _NEWS_FIELDS_FOR_LLM}
+        for item in result["news"]
+    ]
+    return {"url": result["url"], "count": len(news), "news": news}
 
 
 # ============================================================
@@ -409,7 +423,7 @@ TOOLS_SCHEMA = [
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "最多返回几条新闻，默认 10",
+                        "description": "最多返回几条新闻，默认 5",
                     },
                 },
                 "required": ["url"],

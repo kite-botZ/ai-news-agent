@@ -6,6 +6,7 @@
 """
 
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Generator
@@ -39,19 +40,45 @@ def _build_context(username: str) -> tuple[Path, str, str, str]:
     return user_dir, today, now_ts, full_message
 
 
-def _find_saved_path(user_dir: Path, today: str) -> str | None:
-    """找今天最新生成的简报文件。"""
+def _find_saved_path(user_dir: Path, today: str, since: float | None = None) -> str | None:
+    """找今天最新生成的简报文件。
+
+    since 是本次生成的开始时间戳。必须传：模型偶尔会忘记调 write_file，
+    这时如果只按"今天最新的文件"来找，会把**上一次**生成的简报当成这次的结果，
+    前端就会弹出一份旧简报，还显示成刚生成的——静默错误，比报错更难发现。
+    """
     briefs_dir = user_dir / "briefs"
     if not briefs_dir.exists():
         return None
-    today_files = sorted(
-        [f for f in briefs_dir.glob(f"{today}*.md")],
-        key=lambda f: f.stat().st_mtime,
-        reverse=True,
-    )
-    if not today_files:
+    files = [f for f in briefs_dir.glob(f"{today}*.md")]
+    if since is not None:
+        # 容 1 秒误差（文件系统 mtime 精度）
+        files = [f for f in files if f.stat().st_mtime >= since - 1]
+    if not files:
         return None
-    return str(today_files[0].relative_to(Path(DATA_DIR)))
+    newest = max(files, key=lambda f: f.stat().st_mtime)
+    return str(newest.relative_to(Path(DATA_DIR)))
+
+
+def _persist_fallback(user_dir: Path, content: str) -> str | None:
+    """兜底：模型忘了调 write_file，但正文其实已经生成出来了——后端替它落盘。
+
+    实测模型偶尔会跳过写文件这一步，直接把简报当成对话回复吐出来。
+    不兜底的话这次内容会凭空消失：历史简报里没有它，而偏好里的
+    last_generated 又已经被标成今天，用户会以为简报已经存好了。
+
+    返回落盘后的相对路径；内容太短（多半是"已生成"之类的客套话）则返回 None。
+    """
+    text = (content or "").strip()
+    if len(text) < 100:
+        return None
+
+    briefs_dir = user_dir / "briefs"
+    briefs_dir.mkdir(exist_ok=True)
+    now_ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    target = briefs_dir / f"{now_ts}.md"
+    target.write_text(text, encoding="utf-8")
+    return str(target.relative_to(Path(DATA_DIR)))
 
 
 def _update_last_generated(user_dir: Path, today: str) -> None:
@@ -84,7 +111,7 @@ def generate_brief_stream(username: str) -> Generator[str, None, None]:
     - status    ：状态提示
     - text      ：模型输出的文字片段（打字机效果）
     - progress  ：工具调用进度（人话）
-    - done      ：生成完成，带 saved_path / date / iterations
+    - done      ：生成完成，带 brief_id / saved_path / date / iterations
     - error     ：错误
     """
 
@@ -102,6 +129,7 @@ def generate_brief_stream(username: str) -> Generator[str, None, None]:
 
     tool_count = 0
     iterations = 0
+    started_at = time.time()
 
     try:
         for event in run_react_stream_realtime(
@@ -159,15 +187,21 @@ def generate_brief_stream(username: str) -> Generator[str, None, None]:
 
             elif etype == "done":
                 content = event.get("content", "")
-                saved_path = _find_saved_path(user_dir, today)
+                saved_path = _find_saved_path(user_dir, today, since=started_at)
+                if saved_path is None:
+                    saved_path = _persist_fallback(user_dir, content)
 
                 # 更新偏好里的 last_generated
                 _update_last_generated(user_dir, today)
 
+                # brief_id 是简报文件的 stem（如 2026-10-12_00-13-07），
+                # 前端拿到它就能直接调 GET /briefs/{brief_id} 把正文读回来，
+                # 不用再让模型在最后一条回复里把简报复述一遍（那要白等 30 秒）。
                 yield sse(
                     "done",
                     content=content,
                     date=today,
+                    brief_id=Path(saved_path).stem if saved_path else None,
                     saved_path=saved_path,
                     tool_count=tool_count,
                     iterations=iterations,
@@ -188,13 +222,16 @@ def generate_brief_for_user(username: str) -> dict:
     """同步生成（保留，用于测试）。"""
     user_dir, today, now_ts, full_message = _build_context(username)
 
+    started_at = time.time()
     result = run_react(
         system_prompt=NEWS_AGENT_PROMPT,
         user_message=full_message,
         sandbox_dir=user_dir,
     )
 
-    saved_path = _find_saved_path(user_dir, today)
+    saved_path = _find_saved_path(user_dir, today, since=started_at)
+    if saved_path is None:
+        saved_path = _persist_fallback(user_dir, result["answer"])
     _update_last_generated(user_dir, today)
 
     return {
@@ -203,5 +240,6 @@ def generate_brief_for_user(username: str) -> dict:
         "content": result["answer"],
         "tool_calls": result["tool_calls"],
         "iterations": result["iterations"],
+        "brief_id": Path(saved_path).stem if saved_path else None,
         "saved_path": saved_path,
     }
