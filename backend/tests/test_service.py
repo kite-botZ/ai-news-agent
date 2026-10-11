@@ -199,6 +199,46 @@ def test_stream_reports_error_when_model_produced_nothing(user_dir, fake_react):
     assert "没有产出内容" in next(e["content"] for e in events if e["type"] == "error")
 
 
+def test_stream_flags_a_write_that_overwrote_an_existing_brief(user_dir, fake_react):
+    """覆盖同名简报必须在进度里报出来。
+
+    文件名带秒级时间戳，正常永远不会撞。一旦撞上，就说明模型没照抄任务消息
+    给的文件名（八成是拿提示词里的示例时间戳顶替了），而这一撞会**盖掉上一份简报**。
+    """
+    fake_react(
+        {"type": "tool_call", "name": "write_file", "args": {}},
+        {"type": "tool_result", "name": "write_file", "result": {
+            "path": "briefs/2026-10-12_09-30-15.md",
+            "size": 700,
+            "message": "写入成功（覆盖了已存在的同名文件，原 2100 字节）",
+            "overwrote_bytes": 2100,
+        }},
+        {"type": "done", "content": "今天的简报已生成并保存。"},
+    )
+
+    progress = [
+        e["content"] for e in _consume() if e["type"] == "progress"
+    ]
+
+    assert any("覆盖" in line for line in progress), progress
+
+
+def test_stream_does_not_cry_wolf_on_a_normal_write(user_dir, fake_react):
+    fake_react(
+        {"type": "tool_result", "name": "write_file", "result": {
+            "path": "briefs/2026-10-12_09-30-15.md",
+            "size": 700,
+            "message": "写入成功",
+        }},
+        {"type": "done", "content": "今天的简报已生成并保存。"},
+    )
+
+    progress = [e["content"] for e in _consume() if e["type"] == "progress"]
+
+    assert any("已保存到" in line for line in progress), progress
+    assert not any("覆盖" in line for line in progress), progress
+
+
 def test_failed_generation_does_not_mark_last_generated(user_dir, fake_react):
     """没生成成功就不能把 last_generated 标成今天。
 

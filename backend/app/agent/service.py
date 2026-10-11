@@ -176,11 +176,25 @@ def generate_brief_stream(username: str) -> Generator[str, None, None]:
                             tool=name,
                         )
                     elif name == "write_file":
-                        yield sse(
-                            "progress",
-                            content=f"   已保存到 {result.get('path', '')}",
-                            tool=name,
-                        )
+                        # 覆盖了同名文件要说出来。正常情况不会发生（文件名带秒级
+                        # 时间戳），一旦发生就说明模型没照抄任务消息给的文件名，
+                        # 很可能是拿提示词里的示例时间戳顶替了——那意味着上一份
+                        # 简报已经被盖掉。让它在面板上留一行，别无声无息。
+                        if result.get("overwrote_bytes"):
+                            yield sse(
+                                "progress",
+                                content=(
+                                    f"   ⚠️ 覆盖了已存在的 {result.get('path', '')}"
+                                    f"（原 {result['overwrote_bytes']} 字节）"
+                                ),
+                                tool=name,
+                            )
+                        else:
+                            yield sse(
+                                "progress",
+                                content=f"   已保存到 {result.get('path', '')}",
+                                tool=name,
+                            )
 
             elif etype == "iterations":
                 iterations = event.get("count", 0)

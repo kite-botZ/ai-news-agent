@@ -20,7 +20,7 @@
 | 前端 | Vue 3 + TypeScript + Vite + vue-router + axios |
 | 生成时机 | 进入新闻页时按需自动生成（当天已有则跳过） |
 | 存储 | 文件系统（每用户一个目录），无数据库 |
-| 测试 | pytest，101 个用例，不联网、不调模型 |
+| 测试 | pytest，108 个用例，不联网、不调模型 |
 
 ---
 
@@ -202,7 +202,7 @@ ReAct 循环：
 
 ### 跟着这个改动一起暴露出来的坑
 
-提速过程中撞到三个**静默错误**，都补了兜底和用例：
+提速过程中撞到四个**静默错误**，都补了兜底和用例：
 
 - **模型偶尔不调 `write_file`**（实测 6 次出现 1 次），直接把简报当成对话回复吐出来。
   原本要用 `_find_saved_path` 找文件落库，这时它会捞到**上一次**生成的简报，
@@ -221,6 +221,17 @@ ReAct 循环：
   真没内容就干脆不弹窗。回归用例见 `test_stream_drops_whitespace_only_text_chunks`、
   `test_empty_or_whitespace_final_answer_is_reported_as_missing`、
   `test_stream_reports_error_when_model_produced_nothing`。
+- **提示词里的示例文件名被模型照抄了**。这个最阴：示例写的是
+  `write_file("briefs/2026-10-10_14-30-25.md", ...)`，而 `data/` 下真的躺着
+  `briefs/2026-10-11_14-30-25.md` —— 日期换成了当天，时间部分原样搬了过来
+  （文件名叫 14:30，实际写入 23:36，差 9 小时，就是这么露的马脚）。
+  后果不只是文件名难看：**同一天第二次生成会写到和第一次完全相同的路径，
+  把上一份简报直接盖掉**，不报错、不留痕。修法是三层：
+  ①示例改成 `<年>-<月>-<日>_<时>-<分>-<秒>` 这种占位符并明说"必须原样用任务消息给的名字"；
+  ②`write_file` 覆盖同名文件时在返回值里报出原文件大小；
+  ③SSE 进度里把这次覆盖标成 `⚠️` 显示出来。
+  用例见 `tests/test_prompts.py`（钉死"提示词里不许出现具体时间戳"）、
+  `test_overwriting_an_existing_file_is_reported`。
 
 ### 安全设计
 
@@ -269,7 +280,7 @@ ReAct 循环：
 
 ```bash
 cd backend
-python -m pytest        # 101 个用例，约 1 秒
+python -m pytest        # 108 个用例，约 1 秒
 ```
 
 全部**不联网、不调模型**，所以可以随便跑、不花钱：

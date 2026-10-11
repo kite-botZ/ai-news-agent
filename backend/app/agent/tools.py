@@ -147,12 +147,26 @@ def tool_search_content(keyword: str, dir: str = ".") -> dict:
 # ============================================================
 
 def tool_write_file(path: str, content: str) -> dict:
-    """写入文件（覆盖）。"""
+    """写入文件（覆盖）。
+
+    覆盖同名文件时，把原来那个的字节数一并报出来。这个项目真的这样丢过简报：
+    模型偶尔会把提示词里那个示例时间戳当成文件名，于是同一天第二次生成写到
+    和第一次完全相同的路径上，把上一份悄悄盖掉——历史里少一份，没有任何报错。
+    （提示词里的例子已经改成占位符了，这里是第二道防线。）
+    报出来至少能在 SSE 进度里看见，而不是无声无息。
+    """
     try:
         target = _safe_path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
+
+        overwrote = target.stat().st_size if target.is_file() else None
         target.write_text(content, encoding="utf-8")
-        return {"path": path, "size": len(content), "message": "写入成功"}
+
+        result = {"path": path, "size": len(content), "message": "写入成功"}
+        if overwrote is not None:
+            result["message"] = f"写入成功（覆盖了已存在的同名文件，原 {overwrote} 字节）"
+            result["overwrote_bytes"] = overwrote
+        return result
     except Exception as e:
         return {"error": str(e)}
 

@@ -221,3 +221,34 @@ def test_search_content_finds_keyword(sandbox):
 def test_search_content_misses_gracefully(sandbox):
     result = tool_search_content("不存在的关键词")
     assert result["count"] == 0
+
+
+# ============================================================
+# write_file：覆盖必须是看得见的
+# ============================================================
+
+def test_overwriting_an_existing_file_is_reported(sandbox):
+    """覆盖同名文件时要在返回值里说明，不能让上一份简报无声消失。
+
+    真实场景：模型拿提示词里的示例时间戳当文件名，同一天第二次生成写到
+    和第一次同一个路径。以前返回值只有一句"写入成功"，两份变一份谁都不知道。
+    """
+    from app.agent.tools import tool_write_file
+
+    tool_write_file("briefs/2026-10-12_09-30-15.md", "上一份简报" * 50)
+    result = tool_write_file("briefs/2026-10-12_09-30-15.md", "这次的简报")
+
+    assert "覆盖" in result["message"], result
+    assert result["overwrote_bytes"] > 0
+    assert (sandbox / "briefs" / "2026-10-12_09-30-15.md").read_text(
+        encoding="utf-8"
+    ) == "这次的简报"
+
+
+def test_first_write_does_not_claim_to_have_overwritten(sandbox):
+    from app.agent.tools import tool_write_file
+
+    result = tool_write_file("briefs/2026-10-12_09-30-15.md", "新简报")
+
+    assert result["message"] == "写入成功"
+    assert "overwrote_bytes" not in result
