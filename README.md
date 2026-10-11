@@ -20,7 +20,7 @@
 | 前端 | Vue 3 + TypeScript + Vite + vue-router + axios |
 | 生成时机 | 进入新闻页时按需自动生成（当天已有则跳过） |
 | 存储 | 文件系统（每用户一个目录），无数据库 |
-| 测试 | pytest，72 个用例，不联网、不调模型 |
+| 测试 | pytest，82 个用例，不联网、不调模型 |
 
 ---
 
@@ -95,7 +95,7 @@ npm run dev
 ## 功能
 
 - **用户管理**：创建用户、读写订阅偏好
-- **新闻聚合**：`/api/news` 并发拉取 9 个 RSS 源，合并去重后返回（带 10 分钟缓存）
+- **新闻聚合**：`/api/news` 并发拉取 6 个 RSS 源，按源轮流交错合并去重后返回（带 10 分钟缓存）
 - **AI 简报生成**：
   - 同步接口 `POST .../generate`（阻塞）
   - **SSE 流式接口** `POST .../generate-stream`（打字机效果，前端主用）
@@ -201,7 +201,7 @@ ReAct 循环：
 
 ```bash
 cd backend
-python -m pytest        # 72 个用例，约 1 秒
+python -m pytest        # 82 个用例，约 1 秒
 ```
 
 全部**不联网、不调模型**，所以可以随便跑、不花钱：
@@ -211,6 +211,7 @@ python -m pytest        # 72 个用例，约 1 秒
 | `tests/test_sandbox.py` | 目录穿越（相对路径、绝对路径、`a/../` 绕回）全部被拦，并且验证越界文件**确实没有被创建出来** |
 | `tests/test_tools.py` | bash 白名单 + 参数沙箱 + 管道拦截、`fetch_rss` 白名单（防 SSRF）、schema 与实现一一对应、缺参数时的兜底 |
 | `tests/test_users.py` | 用户名与简报文件名两条正则（用户可控字符串直接拼进路径的地方）、偏好字段白名单、简报排序 |
+| `tests/test_rss.py` | 多源合并必须**按源轮流交错**（否则后面的源会被 `max_total` 整段切掉）、单源失败不影响整体、按 link 去重 |
 | `tests/test_react.py` | ReAct 循环的三个出口（直接回答 / 调完工具回答 / 撞到 `MAX_ITERATIONS`）、`tool_call_id` 配对、沙箱在 `finally` 里恢复 |
 
 `test_react.py` 把 `react.chat` 换成一个按脚本应答的假 LLM，循环就退化成一个普通状态机，
@@ -256,6 +257,7 @@ ai-news-agent/
 │   │   ├── test_sandbox.py   # 沙箱隔离
 │   │   ├── test_tools.py     # 工具白名单 / schema 一致性
 │   │   ├── test_users.py     # 用户名校验 / 偏好读写
+│   │   ├── test_rss.py       # 多源交错合并
 │   │   └── test_react.py     # ReAct 循环（用假 LLM）
 │   ├── pytest.ini            # testpaths 限定为 tests/
 │   ├── check_llm.py          # 排查：API 通不通
