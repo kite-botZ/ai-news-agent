@@ -269,11 +269,14 @@ const renderedBrief = computed(() => renderMarkdown(displayContent.value))
 // ==================== 历史简报 ====================
 const briefs = ref<Array<{ date: string; size: number }>>([])
 
-async function loadBriefs() {
+async function loadBriefs(): Promise<boolean> {
   try {
     const data = await request.get(`/users/${username}/briefs`) as any
     briefs.value = Array.isArray(data) ? data : []
-  } catch { /* ignore */ }
+    return true
+  } catch {
+    return false
+  }
 }
 
 async function viewBrief(date: string) {
@@ -294,6 +297,13 @@ const modalContent = ref('')
 
 // 弹窗内容的 Markdown 渲染结果
 const renderedModal = computed(() => renderMarkdown(modalContent.value))
+
+/** 本地时区的今天（YYYY-MM-DD）。不能用 toISOString()，那是 UTC，会差一天 */
+function localToday(): string {
+  const d = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
 
 function formatDate(s: string) {
   if (s.includes('_')) {
@@ -317,9 +327,19 @@ function goHome() {
   router.push('/')
 }
 
-onMounted(() => {
+onMounted(async () => {
   loadNews()
-  loadBriefs()
+
+  // 简报列表加载成功、且今天还没有简报 → 自动生成一份
+  // （走 SSE 流式，右侧面板能实时看到进度，不会干等）
+  const loaded = await loadBriefs()
+  if (loaded) {
+    const today = localToday()
+    const hasToday = briefs.value.some((b) => b.date.startsWith(today))
+    if (!hasToday) {
+      generateBrief()
+    }
+  }
 })
 </script>
 
