@@ -20,7 +20,7 @@
 | 前端 | Vue 3 + TypeScript + Vite + vue-router + axios |
 | 生成时机 | 进入新闻页时按需自动生成（当天已有则跳过） |
 | 存储 | 文件系统（每用户一个目录），无数据库 |
-| 测试 | pytest，42 个用例，不联网、不调模型 |
+| 测试 | pytest，72 个用例，不联网、不调模型 |
 
 ---
 
@@ -201,7 +201,7 @@ ReAct 循环：
 
 ```bash
 cd backend
-python -m pytest        # 42 个用例，约 1 秒
+python -m pytest        # 72 个用例，约 1 秒
 ```
 
 全部**不联网、不调模型**，所以可以随便跑、不花钱：
@@ -210,26 +210,25 @@ python -m pytest        # 42 个用例，约 1 秒
 |---|---|
 | `tests/test_sandbox.py` | 目录穿越（相对路径、绝对路径、`a/../` 绕回）全部被拦，并且验证越界文件**确实没有被创建出来** |
 | `tests/test_tools.py` | bash 白名单 + 参数沙箱 + 管道拦截、`fetch_rss` 白名单（防 SSRF）、schema 与实现一一对应、缺参数时的兜底 |
+| `tests/test_users.py` | 用户名与简报文件名两条正则（用户可控字符串直接拼进路径的地方）、偏好字段白名单、简报排序 |
 | `tests/test_react.py` | ReAct 循环的三个出口（直接回答 / 调完工具回答 / 撞到 `MAX_ITERATIONS`）、`tool_call_id` 配对、沙箱在 `finally` 里恢复 |
 
 `test_react.py` 把 `react.chat` 换成一个按脚本应答的假 LLM，循环就退化成一个普通状态机，
 每条分支都能单独断言——测 LLM 应用不等于必须真的调 API。
+`test_users.py` 则把用户根目录指到 `tmp_path`，不碰真实的 `data/`。
 
-### 手工调试脚本
+### 排查脚本
 
-`backend/` 下另有几个**需要真实调模型**的脚本（都带 `if __name__ == "__main__"` 守卫，
-不会被 pytest 收走；`pytest.ini` 里也把 `testpaths` 限定成 `tests/` 了）：
+`backend/` 下有两个**需要联网 / 调模型**的脚本，用来排查环境问题——
+它们不是自动化测试，所以命名是 `check_*` 而不是 `test_*`：
 
 ```bash
 cd backend
-python test_llm.py          # 测 LLM 通不通
-python test_tools.py        # 手工过一遍 6 个工具
-python test_react.py        # 真实跑一次 ReAct 循环
-python test_news_agent.py   # 完整跑一次简报生成
-python test_users.py        # 测用户管理
-python test_fetch_rss.py    # 测 RSS 抓取
-python test_rss_probe.py    # 探测哪些 RSS 源可用
+python check_llm.py           # .env 里的 key / base_url / 模型名配对了没有
+python check_rss_sources.py   # 探测一批候选 RSS 源，看哪些当前能通
 ```
+
+`check_rss_sources.py` 的候选列表里也有**没进白名单**的源，所以它同时用来挑选和替换新闻源。
 
 ---
 
@@ -256,8 +255,11 @@ ai-news-agent/
 │   │   ├── conftest.py
 │   │   ├── test_sandbox.py   # 沙箱隔离
 │   │   ├── test_tools.py     # 工具白名单 / schema 一致性
+│   │   ├── test_users.py     # 用户名校验 / 偏好读写
 │   │   └── test_react.py     # ReAct 循环（用假 LLM）
 │   ├── pytest.ini            # testpaths 限定为 tests/
+│   ├── check_llm.py          # 排查：API 通不通
+│   ├── check_rss_sources.py  # 排查：哪些 RSS 源能通
 │   ├── data/users/           # 用户数据（git 忽略）
 │   ├── seed_demo.py          # 演示账号种子脚本
 │   └── run.py                # 启动脚本
