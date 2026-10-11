@@ -255,6 +255,55 @@ def test_stream_emits_text_tool_events_then_done(monkeypatch, sandbox):
     )
 
 
+def test_stream_forwards_reasoning_without_polluting_the_answer(monkeypatch, sandbox):
+    """思考过程要推给前端，但**不能混进最终回答**。
+
+    混进去的话 done 的 content 会变成一堆"用户可能想知道…我先看看…"的内心戏，
+    而那个 content 是要落盘成简报的（模型忘了写文件时由 _persist_fallback 兜底）。
+    """
+    stream = ScriptedStream([
+        [
+            {"type": "reasoning", "text": "用户要看 AI 新闻，"},
+            {"type": "reasoning", "text": "先读偏好。"},
+            {"type": "tool_calls", "tool_calls": [
+                {"id": "c1", "name": "list_dir", "arguments": "{}"},
+            ]},
+        ],
+        [
+            {"type": "reasoning", "text": "目录里没有 briefs。"},
+            {"type": "content", "text": "今天的简报已生成并保存。"},
+        ],
+    ])
+    monkeypatch.setattr(react, "chat_stream", stream)
+
+    events = list(react.run_react_stream_realtime(
+        system_prompt="s", user_message="u", sandbox_dir=sandbox,
+    ))
+
+    reasoning = [e["content"] for e in events if e["type"] == "reasoning"]
+    assert "先读偏好。" in reasoning
+
+    done = [e for e in events if e["type"] == "done"]
+    assert done[0]["content"] == "今天的简报已生成并保存。"
+    assert "内心戏" not in done[0]["content"]
+    assert "用户要看" not in done[0]["content"], "思考过程漏进最终回答了"
+
+
+def test_reasoning_is_not_treated_as_final_text(monkeypatch, sandbox):
+    """只有思考、没有任何 content 时，回答仍应判为"未生成"，不能拿思考顶替。"""
+    stream = ScriptedStream([
+        [{"type": "reasoning", "text": "我不知道该干嘛"}],
+    ])
+    monkeypatch.setattr(react, "chat_stream", stream)
+
+    events = list(react.run_react_stream_realtime(
+        system_prompt="s", user_message="u", sandbox_dir=sandbox,
+    ))
+
+    assert not [e for e in events if e["type"] == "text"]
+    assert [e for e in events if e["type"] == "done"][0]["content"] == "（未生成最终回答）"
+
+
 # ============================================================
 # 回归：空白输出曾经把前端整片挡住
 # ============================================================

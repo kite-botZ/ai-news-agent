@@ -147,6 +147,7 @@ def run_react_stream_realtime(
 
     yield 事件：
     - {"type": "status", "content": "..."}            状态
+    - {"type": "reasoning", "content": "..."}        模型的思考过程（逐段）
     - {"type": "text", "content": "..."}              **模型输出的文字片段**
     - {"type": "tool_call", "name": "...", "args": ...}
     - {"type": "tool_result", "name": "...", "result": ...}
@@ -180,6 +181,10 @@ def run_react_stream_realtime(
                     # 前端攒下来会变成一个"非空但看不见"的字符串，把真正的兜底文案挡住。
                     if event["text"].strip():
                         yield {"type": "text", "content": event["text"]}
+                elif event["type"] == "reasoning":
+                    # 思考过程只往前端推，**不进 content_buffer**：
+                    # 它是过程，不是最终回答。混进去会让 done 的 content 变成一堆内心戏。
+                    yield {"type": "reasoning", "content": event["text"]}
                 elif event["type"] == "tool_calls":
                     tool_calls_result = event["tool_calls"]
 

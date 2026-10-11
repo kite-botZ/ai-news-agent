@@ -70,9 +70,14 @@ def chat_stream(messages: list[dict], tools: list[dict] | None = None):
     """流式调用 LLM。
 
     yield 每个 chunk：
+    - {"type": "reasoning", "text": "..."}       模型的思考过程（开了思考才有）
     - {"type": "content", "text": "..."}         模型输出的一段文字
     - {"type": "tool_calls", "tool_calls": [...]} 模型要调用的工具（完整）
+
+    思考过程和正文分开报，不要混在一个 content 流里：
+    思考是给用户看"Agent 在想什么"的，正文是最终回答，两者渲染方式完全不同。
     """
+
     stream = _client.chat.completions.create(
         **_build_kwargs(messages, tools, stream=True)
     )
@@ -82,6 +87,12 @@ def chat_stream(messages: list[dict], tools: list[dict] | None = None):
 
     for chunk in stream:
         delta = chunk.choices[0].delta
+
+        # 0. 思考过程。Qwen3 开思考时逐 token 推 reasoning_content，
+        #    以前这里整个丢掉了 —— 白白浪费了一段本来就已经生成好的流式内容。
+        reasoning = getattr(delta, "reasoning_content", None)
+        if reasoning:
+            yield {"type": "reasoning", "text": reasoning}
 
         # 1. 普通文本
         if delta.content:

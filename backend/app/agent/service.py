@@ -109,6 +109,7 @@ def generate_brief_stream(username: str) -> Generator[str, None, None]:
 
     事件类型：
     - status    ：状态提示
+    - reasoning ：模型的思考过程（逐段推，前端单独一栏显示）
     - text      ：模型输出的文字片段（打字机效果）
     - progress  ：工具调用进度（人话）
     - done      ：生成完成，带 brief_id / saved_path / date / iterations
@@ -145,6 +146,11 @@ def generate_brief_stream(username: str) -> Generator[str, None, None]:
             elif etype == "text":
                 # 模型输出的文字片段 → 立即转发给前端（打字机效果）
                 yield sse("text", content=event["content"])
+
+            elif etype == "reasoning":
+                # 思考过程 → 前端单独一栏显示。逐 token 推过来，本身就是打字机效果，
+                # 而且不用为此多花一秒或一分钱：内容本来就已经生成好了，以前只是没要。
+                yield sse("reasoning", content=event["content"])
 
             elif etype == "tool_call":
                 tool_count += 1

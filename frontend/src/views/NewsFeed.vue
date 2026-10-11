@@ -90,10 +90,23 @@
               <span v-if="generating" class="typing-cursor">▌</span>
             </div>
 
-            <ul v-if="generating" class="progress-list">
-              <li v-for="(line, i) in progressLog" :key="i">{{ line }}</li>
-              <li v-if="streamText.trim()" class="progress-done">{{ streamText.trim() }}</li>
-            </ul>
+            <template v-if="generating">
+              <!-- Agent 的思考过程。逐 token 推过来的，所以这里天然就是打字机效果，
+                   不需要前端做任何假动画。放在进度之上、用更淡的样式，
+                   目的是让"顺序由 LLM 自己决定"这件事看得见。 -->
+              <div v-if="reasoningText.trim()" class="reasoning-box">
+                <div class="reasoning-head">
+                  <span>🧠 Agent 的思考</span>
+                  <span class="typing-cursor">▌</span>
+                </div>
+                <div ref="reasoningEl" class="reasoning-text">{{ reasoningText.trim() }}</div>
+              </div>
+
+              <ul class="progress-list">
+                <li v-for="(line, i) in progressLog" :key="i">{{ line }}</li>
+                <li v-if="streamText.trim()" class="progress-done">{{ streamText.trim() }}</li>
+              </ul>
+            </template>
 
             <div
               v-else-if="briefContent"
@@ -144,7 +157,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import request from '@/api/request'
 import { renderMarkdown } from '@/utils/markdown'
@@ -200,6 +213,8 @@ function sourceName(item: any) {
 // ==================== AI 简报生成 ====================
 const generating = ref(false)
 const progressLog = ref<string[]>([])   // 工具调用进度（人话），生成过程中实时显示
+const reasoningText = ref('')           // Agent 的思考过程（本轮），逐 token 推过来
+const reasoningEl = ref<HTMLElement | null>(null)   // 思考框，用来跟着新内容滚到底
 const streamText = ref('')              // 模型输出的文字（正常情况下只有一句总结）
 const briefContent = ref('')            // 简报正文——生成完从后端文件读回来
 let abortController: AbortController | null = null
@@ -209,6 +224,7 @@ async function generateBrief() {
 
   generating.value = true
   progressLog.value = []
+  reasoningText.value = ''
   streamText.value = ''
   briefContent.value = ''
 
@@ -273,12 +289,26 @@ function handleEvent(event: any) {
   if (event.type === 'status' || event.type === 'progress') {
     // 后端一直在推这些进度事件，以前前端直接丢掉了，面板只能干等
     if (event.content) progressLog.value.push(event.content)
+    // 每轮开头会推一条 status（"🤔 第 N 轮思考…"），拿它当分轮边界，
+    // 清掉上一轮的思考。不清的话四轮攒下来几百字，会把进度列表顶出屏幕。
+    if (event.type === 'status') reasoningText.value = ''
+  } else if (event.type === 'reasoning') {
+    // 逐 token 推过来的，累加即可 —— 打字机效果是后端真实的推送节奏，
+    // 不是前端拿定时器一个字一个字挤出来的假动画
+    reasoningText.value += event.content
   } else if (event.type === 'text') {
     streamText.value += event.content
   } else if (event.type === 'error') {
     progressLog.value.push(`❌ ${event.content}`)
   }
 }
+
+// 思考框有固定高度，新内容会落在可视区下面 —— 跟着滚到底，否则用户只看到开头
+watch(reasoningText, async () => {
+  await nextTick()
+  const el = reasoningEl.value
+  if (el) el.scrollTop = el.scrollHeight
+})
 
 /**
  * 生成完成：正文从后端存好的文件里读回来。
@@ -674,6 +704,36 @@ onMounted(async () => {
   font-size: 13px;
   line-height: 1.8;
   color: #2d4238;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Agent 的思考过程。
+   风格上要明显比进度条"轻"：它是过程，不是结论，别抢简报正文的注意力。
+   固定高度 + 内部滚动 —— 思考会一直往上涨，不固定的话四轮下来
+   会把下面的工具进度整个顶出可视区。 */
+.reasoning-box {
+  margin-bottom: 12px;
+  padding: 9px 11px;
+  background: #f7f9fc;
+  border-left: 3px solid #c9d8ef;
+  border-radius: 4px;
+}
+.reasoning-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 5px;
+  font-size: 11.5px;
+  color: #7d8fa4;
+  letter-spacing: 0.3px;
+}
+.reasoning-text {
+  max-height: 132px;
+  overflow-y: auto;
+  font-size: 12px;
+  line-height: 1.75;
+  color: #8b9aab;
   white-space: pre-wrap;
   word-break: break-word;
 }
