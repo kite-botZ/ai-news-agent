@@ -20,6 +20,7 @@
 | 前端 | Vue 3 + TypeScript + Vite + vue-router + axios |
 | 生成时机 | 进入新闻页时按需自动生成（当天已有则跳过） |
 | 存储 | 文件系统（每用户一个目录），无数据库 |
+| 测试 | pytest，42 个用例，不联网、不调模型 |
 
 ---
 
@@ -152,13 +153,33 @@ ReAct 循环：
 | `bash(command)` | 执行 shell 命令（白名单） |
 | `fetch_rss(url, limit)` | 拉取 RSS 新闻源（白名单） |
 
+### 工具调用顺序由 LLM 决定
+
+提示词里**不写**「第一步调 A、第二步调 B」，也不规定每个工具调几次。只给目标和约束，
+顺序、数量、何时停，全部交给模型判断。
+
+这带来两个直接后果，都能观察到：
+
+- **同一天不同用户的调用轨迹不一样**。实测两次：
+  `read_file → fetch_rss×5 → write_file`（9 轮）
+  与
+  `read_file → fetch_rss×3 → search_content → fetch_rss×2 → write_file`（7 轮）
+- **不是每个工具都会被用到**。`search_content` 只在模型判断"该看看历史简报、避免和昨天重复"
+  时才出现；`list_dir` / `bash` 在这次任务里没必要，模型就没调。工具是**被场景需要**的，不是凑数。
+
+提示词里只有一条预算提示（"3 个源左右通常够了"）用来控成本——那是**约束**，不是**顺序**。
+
 ### 安全设计
 
 - **沙箱**：所有文件操作限制在 `data/users/<username>/` 内，`_safe_path()` 用 `resolve()` + `relative_to()` 双重校验防目录穿越
 - **并发隔离**：当前沙箱用 `contextvars` 保存，多个请求互不干扰
-- **命令白名单**：`bash` 只允许 `ls/cat/echo/pwd/date/wc/head/tail/grep/find`（Windows 下自动映射成 `dir/type` 等）
-- **SSRF 防护**：`fetch_rss` 只允许 `app/rss.py` 里 `RSS_SOURCES` 白名单内的源
+- **命令白名单**：`bash` 只允许 `ls/cat/echo/pwd/date/wc/head/tail/grep/find`（Windows 下自动映射成 `dir/type`，并把 GNU 短选项翻成 cmd 的写法，如 `grep -i` → `findstr /i`）
+- **参数也要过沙箱**：白名单只管得住命令名。`cat ../../.env` 的命令名是合法的 `cat`，但参数能读到沙箱外的 API Key——所以每个路径参数都要再走一遍 `_safe_path`
+- **禁止管道 / 重定向 / 命令连接符**：`echo hi; rm -rf /` 的命令名同样是合法的 `echo`，所以 `; | & > <` 和变量展开一律拒绝
+- **SSRF 防护**：`fetch_rss` 只允许 `app/rss.py` 里 `RSS_SOURCES` 白名单内的源（校验的是完整 URL 相等，不是包含关系）
 - **密钥**：走环境变量，`.env` 已被 `.gitignore` 忽略
+
+上面这几条都有对应的 pytest 用例，不是只写在文档里。
 
 ---
 
@@ -174,16 +195,36 @@ ReAct 循环：
 
 ---
 
-## 手工测试脚本
+## 测试
 
-`backend/` 下有几个可直接运行的脚本（都带 `if __name__ == "__main__"` 守卫，
-不会被 pytest 误收集）：
+### 自动化测试（pytest）
+
+```bash
+cd backend
+python -m pytest        # 42 个用例，约 1 秒
+```
+
+全部**不联网、不调模型**，所以可以随便跑、不花钱：
+
+| 文件 | 覆盖什么 |
+|---|---|
+| `tests/test_sandbox.py` | 目录穿越（相对路径、绝对路径、`a/../` 绕回）全部被拦，并且验证越界文件**确实没有被创建出来** |
+| `tests/test_tools.py` | bash 白名单 + 参数沙箱 + 管道拦截、`fetch_rss` 白名单（防 SSRF）、schema 与实现一一对应、缺参数时的兜底 |
+| `tests/test_react.py` | ReAct 循环的三个出口（直接回答 / 调完工具回答 / 撞到 `MAX_ITERATIONS`）、`tool_call_id` 配对、沙箱在 `finally` 里恢复 |
+
+`test_react.py` 把 `react.chat` 换成一个按脚本应答的假 LLM，循环就退化成一个普通状态机，
+每条分支都能单独断言——测 LLM 应用不等于必须真的调 API。
+
+### 手工调试脚本
+
+`backend/` 下另有几个**需要真实调模型**的脚本（都带 `if __name__ == "__main__"` 守卫，
+不会被 pytest 收走；`pytest.ini` 里也把 `testpaths` 限定成 `tests/` 了）：
 
 ```bash
 cd backend
 python test_llm.py          # 测 LLM 通不通
-python test_tools.py        # 测 6 个工具
-python test_react.py        # 测 ReAct 循环
+python test_tools.py        # 手工过一遍 6 个工具
+python test_react.py        # 真实跑一次 ReAct 循环
 python test_news_agent.py   # 完整跑一次简报生成
 python test_users.py        # 测用户管理
 python test_fetch_rss.py    # 测 RSS 抓取
@@ -211,6 +252,12 @@ ai-news-agent/
 │   │   ├── users.py          # 用户数据管理
 │   │   ├── config.py         # 配置
 │   │   └── main.py           # FastAPI 入口
+│   ├── tests/                # pytest 用例（不联网、不调模型）
+│   │   ├── conftest.py
+│   │   ├── test_sandbox.py   # 沙箱隔离
+│   │   ├── test_tools.py     # 工具白名单 / schema 一致性
+│   │   └── test_react.py     # ReAct 循环（用假 LLM）
+│   ├── pytest.ini            # testpaths 限定为 tests/
 │   ├── data/users/           # 用户数据（git 忽略）
 │   ├── seed_demo.py          # 演示账号种子脚本
 │   └── run.py                # 启动脚本
