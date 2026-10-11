@@ -172,21 +172,85 @@ _WINDOWS_CMD_MAP = {
     "grep": "findstr",
 }
 
+# GNU 短选项 → cmd.exe 等价选项。
+# 光换命令名是不够的：cmd 的 findstr 只认 /i 不认 -i，dir 根本没有 -l。
+_WINDOWS_FLAG_MAP = {
+    "-i": "/i",
+    "-l": "",      # dir 无此选项，直接丢掉
+    "-a": "/a",
+    "-la": "/a",
+    "-al": "/a",
+}
+
+
+def _to_windows_command(command: str) -> str:
+    """把 Linux 风格的命令翻译成 cmd.exe 能跑的写法。
+
+    只翻译白名单内、且需要改写的命令；其余原样返回。
+    """
+    parts = command.strip().split()
+    if not parts:
+        return command
+
+    mapped = _WINDOWS_CMD_MAP.get(parts[0])
+    if not mapped:
+        return command
+
+    # cmd 里不带参数的 `cd` 就是打印当前目录，正好等价于 pwd
+    if mapped == "cd":
+        return "cd"
+
+    args = [_WINDOWS_FLAG_MAP.get(a, a) for a in parts[1:]]
+    args = [a for a in args if a]          # 丢掉被翻译没的选项（如 -l）
+    return " ".join([mapped, *args])
+
+
+# 管道 / 重定向 / 命令连接符 / 变量展开。
+# 这个工具只用来「看一眼目录」，用不到这些；放开的代价是白名单形同虚设——
+# `echo hi; rm -rf /` 的命令名是合法的 echo，但分号后面想跑什么就跑什么。
+_SHELL_METACHARS = (";", "|", "&", ">", "<", "`", "$", "%", "\n", "\r")
+
+
+def _arguments_stay_in_sandbox(command: str) -> bool:
+    """检查命令参数里的路径有没有爬出沙箱。
+
+    白名单只管得住命令名，管不住参数：`cat ../../.env` 的命令名是合法的 cat，
+    但参数能读到沙箱外面（比如 backend/.env 里的 API Key）。
+    所以每个非选项的 token 都过一遍 _safe_path —— 不是路径的词（搜索关键字之类）
+    会被当成沙箱内的相对路径，无害地通过。
+    """
+    for token in command.split()[1:]:
+        if token.startswith("-"):
+            continue
+        # Windows 风格的选项长这样：/i /a，很短且不含路径分隔符
+        if token.startswith("/") and len(token) <= 3:
+            continue
+        try:
+            _safe_path(token)
+        except ValueError:
+            return False
+    return True
+
 
 def tool_bash(command: str) -> dict:
-    """执行 shell 命令（限制白名单 + 沙箱目录）。"""
-    # Windows 环境下做命令转换
-    if sys.platform == "win32":
-        parts = command.strip().split(maxsplit=1)
-        if parts:
-            cmd_name = parts[0]
-            if cmd_name in _WINDOWS_CMD_MAP:
-                mapped = _WINDOWS_CMD_MAP[cmd_name]
-                command = mapped + (f" {parts[1]}" if len(parts) > 1 else "")
+    """执行 shell 命令（白名单 + 参数沙箱 + 禁止管道）。"""
+    parts = command.strip().split()
+    cmd_name = parts[0] if parts else ""
 
-    cmd_name = command.strip().split()[0] if command.strip() else ""
     if cmd_name not in _BASH_WHITELIST:
         return {"error": f"命令 {cmd_name} 不在白名单，仅允许：{_BASH_WHITELIST}"}
+
+    for char in _SHELL_METACHARS:
+        if char in command:
+            return {
+                "error": f"命令里不允许出现 {char!r}（管道 / 重定向 / 命令连接符）"
+            }
+
+    if not _arguments_stay_in_sandbox(command):
+        return {"error": "命令参数越界：不允许访问沙箱目录以外的路径"}
+
+    if sys.platform == "win32":
+        command = _to_windows_command(command)
 
     try:
         result = subprocess.run(
@@ -311,9 +375,12 @@ TOOLS_SCHEMA = [
         "function": {
             "name": "bash",
             "description": (
-                "执行 shell 命令。仅允许白名单内的命令："
+                "执行 shell 命令，用于辅助查看目录内容。"
+                "仅允许白名单内的命令："
                 "ls、cat、echo、pwd、date、wc、head、tail、grep、find、"
                 "dir、type、cd、where、findstr。"
+                "不支持管道、重定向和命令连接符（| > ; &），"
+                "参数里的路径也不能超出当前用户目录。"
             ),
             "parameters": {
                 "type": "object",
