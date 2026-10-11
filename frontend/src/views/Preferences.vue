@@ -142,7 +142,7 @@ async function save() {
 
     // 1 秒后跳到简报页
     setTimeout(() => {
-      router.push(`/users/${username}/briefs`)
+      router.push(`/users/${username}/news`)
     }, 800)
   } catch (e: any) {
     message.value = e.message || '保存失败'

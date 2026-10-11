@@ -51,7 +51,7 @@ async function handleEnter() {
     try {
       await request.get(`/users/${username.value}/preferences`)
       // 成功 → 用户存在
-      router.push(`/users/${username.value}/briefs`)
+      router.push(`/users/${username.value}/news`)
     } catch (e: any) {
       // 404 → 用户不存在，询问是否创建
       if (e.message.includes('不存在') || e.message.includes('404')) {
