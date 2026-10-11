@@ -7,7 +7,6 @@
 """
 
 import json
-import os
 import re
 from pathlib import Path
 
@@ -19,6 +18,9 @@ USERS_DIR.mkdir(parents=True, exist_ok=True)
 
 # 用户名规则：字母、数字、下划线，3~20 位
 _USERNAME_PATTERN = re.compile(r"^[a-zA-Z0-9_]{3,20}$")
+
+# 简报文件名（不含 .md）：2026-10-10 或 2026-10-10_14-30-25
+_BRIEF_STEM_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}(_\d{2}-\d{2}-\d{2})?$")
 
 
 def validate_username(username: str) -> bool:
@@ -112,11 +114,26 @@ def list_briefs(username: str) -> list[dict]:
 
 def get_brief(username: str, date: str) -> str:
     """读取某一天的简报内容。"""
+    # date 来自 URL，先校验格式再拼路径，防止目录穿越
+    if not _BRIEF_STEM_PATTERN.match(date):
+        raise ValueError(f"简报标识不合法：{date}")
+
     user_dir = get_user_dir(username)
     brief_file = user_dir / "briefs" / f"{date}.md"
     if not brief_file.exists():
         raise ValueError(f"简报不存在：{date}")
     return brief_file.read_text(encoding="utf-8")
+
+
+def list_users() -> list[str]:
+    """列出所有已创建的用户名（用于定时批量生成简报）。"""
+    if not USERS_DIR.exists():
+        return []
+    return sorted(
+        p.name
+        for p in USERS_DIR.iterdir()
+        if p.is_dir() and (p / "preferences.json").exists()
+    )
 
 
 # ============================================================

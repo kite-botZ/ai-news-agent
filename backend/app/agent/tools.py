@@ -1,45 +1,55 @@
 """Agent 工具定义与执行。
 
-5 个工具：
+6 个工具：
 1. list_dir         - 列出目录内容
 2. read_file        - 读取文件
 3. search_content   - 在目录下按关键词搜索文件内容
 4. write_file       - 写入文件
 5. bash             - 执行 shell 命令（白名单限制）
+6. fetch_rss        - 拉取 RSS 新闻
 
 安全设计：
 - 所有文件操作限制在 data/ 目录内（沙箱）
 - bash 命令只允许白名单内的命令
+- fetch_rss 只允许白名单内的 RSS 源
 """
 
+import contextvars
 import subprocess
+import sys
 from pathlib import Path
 
 from app.config import DATA_DIR
+from app.rss import RSS_WHITELIST, fetch_feed
 
 # 沙箱根目录（默认 data/）
 SANDBOX_DIR = Path(DATA_DIR)
 
 # 当前会话的用户目录（生成简报时会被设置为 data/users/<username>/）
-_current_sandbox: Path | None = None
+# 使用 contextvars 保证并发请求下每个请求的沙箱互相隔离
+_current_sandbox: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
+    "current_sandbox", default=None
+)
 
 
 def set_sandbox(sandbox_dir: Path | None):
     """设置当前会话的沙箱根目录。None 表示回到默认 data/。"""
-    global _current_sandbox
-    _current_sandbox = sandbox_dir
+    _current_sandbox.set(sandbox_dir)
 
 
 def _get_sandbox() -> Path:
     """获取当前沙箱根目录。"""
-    return _current_sandbox if _current_sandbox else SANDBOX_DIR
+    sb = _current_sandbox.get()
+    return sb if sb else SANDBOX_DIR
 
 
 def _safe_path(path: str) -> Path:
     """把相对路径转成沙箱内的绝对路径，防止目录穿越。"""
-    sandbox = _get_sandbox()
+    sandbox = _get_sandbox().resolve()
     p = (sandbox / path).resolve()
-    if not str(p).startswith(str(sandbox)):
+    try:
+        p.relative_to(sandbox)
+    except ValueError:
         raise ValueError(f"路径越界：{path}")
     return p
 
@@ -154,8 +164,6 @@ _BASH_WHITELIST = [
     "dir", "type", "cd", "where", "findstr",
 ]
 
-import sys
-
 # Windows 上把常见 Linux 命令映射到等价命令
 _WINDOWS_CMD_MAP = {
     "ls": "dir",
@@ -177,9 +185,6 @@ def tool_bash(command: str) -> dict:
                 command = mapped + (f" {parts[1]}" if len(parts) > 1 else "")
 
     cmd_name = command.strip().split()[0] if command.strip() else ""
-    if cmd_name not in _BASH_WHITELIST:
-        return {"error": f"命令 {cmd_name} 不在白名单，仅允许：{_BASH_WHITELIST}"}
-    ...
     if cmd_name not in _BASH_WHITELIST:
         return {"error": f"命令 {cmd_name} 不在白名单，仅允许：{_BASH_WHITELIST}"}
 
@@ -207,92 +212,18 @@ def tool_bash(command: str) -> dict:
 # 工具 6：fetch_rss（拉取 RSS 新闻）
 # ============================================================
 
-import xml.etree.ElementTree as ET
-
-import httpx
-
-# 允许的 RSS 源白名单（防止 SSRF 攻击）
-_RSS_WHITELIST = [
-    # 科技综合
-    "https://www.ithome.com/rss/",
-    "https://www.ifanr.com/feed",
-    "https://sspai.com/feed",
-    # AI / 技术垂直
-    "https://www.qbitai.com/feed",
-    "https://www.leiphone.com/feed",
-    "https://www.infoq.cn/feed",
-    # 国外（网络不稳时可能失败）
-    "https://hnrss.org/frontpage",
-    "https://techcrunch.com/feed/",
-    "https://www.theverge.com/rss/index.xml",
-]
-
-
 def tool_fetch_rss(url: str, limit: int = 10) -> dict:
     """拉取 RSS 源，返回新闻列表。
+
+    抓取与解析逻辑统一放在 app/rss.py，这里只做转发，
+    保证 Agent 工具和 /api/news 接口用的是同一套实现。
 
     参数：
     - url：RSS 地址，必须在白名单内
     - limit：最多返回几条
     """
-    if url not in _RSS_WHITELIST:
-        return {"error": f"RSS 源不在白名单，可用：{_RSS_WHITELIST}"}
+    return fetch_feed(url, limit=limit)
 
-    try:
-        resp = httpx.get(url, timeout=15, follow_redirects=True)
-        resp.raise_for_status()
-
-        # 解析 XML
-        root = ET.fromstring(resp.content)
-
-        # RSS 2.0 格式：<item>
-        items = root.findall(".//item")
-        if not items:
-            # Atom 格式：<entry>
-            items = root.findall(".//{http://www.w3.org/2005/Atom}entry")
-
-        news = []
-        for item in items[:limit]:
-            title = _get_text(item, "title")
-            link = _get_text(item, "link")
-            if not link:
-                # Atom 格式 link 在 href 属性里
-                link_el = item.find("{http://www.w3.org/2005/Atom}link")
-                if link_el is not None:
-                    link = link_el.get("href", "")
-            description = _get_text(item, "description") or _get_text(item, "summary")
-
-            # 清理 HTML 标签
-            if description:
-                import re
-                description = re.sub(r"<[^>]+>", "", description)  # 去掉标签
-                description = description.replace("&nbsp;", " ").strip()
-
-            news.append({
-                "title": title.strip() if title else "",
-                "link": link.strip() if link else "",
-                "summary": (description[:200] if description else "").strip(),
-            })
-        return {"url": url, "count": len(news), "news": news}
-    except httpx.TimeoutException:
-        return {"error": "请求超时"}
-    except ET.ParseError as e:
-        return {"error": f"XML 解析失败：{e}"}
-    except Exception as e:
-        return {"error": str(e)}
-
-
-def _get_text(element, tag: str) -> str:
-    """从 XML 元素里取文本，兼容多种命名空间。"""
-    el = element.find(tag)
-    if el is not None and el.text:
-        return el.text
-    # 带命名空间的
-    for prefix in ["http://www.w3.org/2005/Atom", "http://purl.org/rss/1.0/"]:
-        el = element.find(f"{{{prefix}}}{tag}")
-        if el is not None and el.text:
-            return el.text
-    return ""
 
 # ============================================================
 # 工具 schema（给 LLM 看，OpenAI 兼容格式）
@@ -309,7 +240,7 @@ TOOLS_SCHEMA = [
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "相对于 data 目录的路径，默认 '.' 表示根目录",
+                        "description": "相对于当前用户目录的路径，默认 '.' 表示根目录",
                     }
                 },
                 "required": [],
@@ -326,7 +257,7 @@ TOOLS_SCHEMA = [
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "相对于 data 目录的文件路径",
+                        "description": "相对于当前用户目录的文件路径",
                     }
                 },
                 "required": ["path"],
@@ -364,7 +295,7 @@ TOOLS_SCHEMA = [
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "相对于 data 目录的文件路径",
+                        "description": "相对于当前用户目录的文件路径",
                     },
                     "content": {
                         "type": "string",
@@ -379,7 +310,11 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "bash",
-            "description": "执行 shell 命令。仅允许：ls、cat、echo、pwd、date、wc、head、tail、grep、find。",
+            "description": (
+                "执行 shell 命令。仅允许白名单内的命令："
+                "ls、cat、echo、pwd、date、wc、head、tail、grep、find、"
+                "dir、type、cd、where、findstr。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -403,7 +338,7 @@ TOOLS_SCHEMA = [
                     "url": {
                         "type": "string",
                         "description": "RSS 源地址",
-                        "enum": _RSS_WHITELIST,
+                        "enum": RSS_WHITELIST,
                     },
                     "limit": {
                         "type": "integer",
@@ -415,8 +350,6 @@ TOOLS_SCHEMA = [
         },
     },
 ]
-
-
 
 
 # ============================================================

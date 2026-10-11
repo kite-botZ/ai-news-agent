@@ -1,14 +1,17 @@
 """用户管理接口。
 
 提供：
-- POST   /api/users                          创建用户
-- GET    /api/users/{username}/preferences   读偏好
-- PUT    /api/users/{username}/preferences   更新偏好
-- GET    /api/users/{username}/briefs        列简报
-- GET    /api/users/{username}/briefs/{date} 读简报
+- POST   /api/users                                    创建用户
+- GET    /api/users/{username}/preferences             读偏好
+- PUT    /api/users/{username}/preferences             更新偏好
+- GET    /api/users/{username}/briefs                  列简报
+- GET    /api/users/{username}/briefs/{date}           读简报
+- POST   /api/users/{username}/generate                同步生成简报
+- POST   /api/users/{username}/generate-stream         SSE 流式生成简报
 """
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app import users as user_service
@@ -31,7 +34,7 @@ class UpdatePreferencesBody(BaseModel):
 
 
 # ============================================================
-# 接口
+# 用户 CRUD
 # ============================================================
 
 @router.post("", status_code=201)
@@ -82,14 +85,38 @@ def get_brief(username: str, date: str):
         raise HTTPException(status_code=404, detail=str(e))
 
 
+# ============================================================
+# 生成简报：同步版
+# ============================================================
+
 @router.post("/{username}/generate")
-def generate_brief(username: str, verbose: bool = False):
-    """触发 Agent 为指定用户生成今日简报。"""
+def generate_brief(username: str):
+    """同步生成简报（阻塞，慢）。"""
     try:
         from app.agent.service import generate_brief_for_user
-        result = generate_brief_for_user(username, verbose=verbose)
+        result = generate_brief_for_user(username)
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Agent 执行失败：{e}")
+
+
+# ============================================================
+# 生成简报：SSE 流式版
+# ============================================================
+
+@router.post("/{username}/generate-stream")
+def generate_brief_stream_endpoint(username: str):
+    """流式生成简报（SSE），前端逐条读取进度。"""
+    from app.agent.service import generate_brief_stream
+
+    return StreamingResponse(
+        generate_brief_stream(username),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )

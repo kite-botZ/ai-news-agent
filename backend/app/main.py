@@ -1,16 +1,35 @@
 """FastAPI 应用入口。"""
 
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routes import users
+from app.config import CORS_ORIGINS
+from app.routes import news, users
+from app.scheduler import shutdown_scheduler, start_scheduler
 
-app = FastAPI(title="AI 新闻助手 API")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 
-# 允许跨域（前端端口是 5173）
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期：启动时挂定时任务，退出时停掉。"""
+    start_scheduler()
+    yield
+    shutdown_scheduler()
+
+
+app = FastAPI(title="AI 新闻助手 API", lifespan=lifespan)
+
+# 允许跨域（前端地址通过 CORS_ORIGINS 环境变量配置）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -18,6 +37,7 @@ app.add_middleware(
 
 # 挂载路由
 app.include_router(users.router)
+app.include_router(news.router)
 
 
 @app.get("/")

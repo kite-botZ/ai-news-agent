@@ -18,7 +18,7 @@
 import json
 from pathlib import Path
 
-from app.agent.llm import chat
+from app.agent.llm import chat, chat_stream
 from app.agent.tools import TOOLS_SCHEMA, execute_tool, set_sandbox
 from app.config import MAX_ITERATIONS
 
@@ -134,4 +134,102 @@ def run_react(
         }
     finally:
         # 恢复默认沙箱，避免影响后续调用
+        set_sandbox(None)
+
+
+# ============================================================
+# 流式 ReAct：每一段文字都推给前端
+# ============================================================
+
+def run_react_stream_realtime(
+    system_prompt: str,
+    user_message: str,
+    sandbox_dir: Path | None = None,
+):
+    """真·流式 ReAct。
+
+    yield 事件：
+    - {"type": "status", "content": "..."}            状态
+    - {"type": "text", "content": "..."}              **模型输出的文字片段**
+    - {"type": "tool_call", "name": "...", "args": ...}
+    - {"type": "tool_result", "name": "...", "result": ...}
+    - {"type": "iterations", "count": N}
+    - {"type": "done", "content": "..."}              最终完整回答
+    - {"type": "error", "content": "..."}
+    """
+
+    set_sandbox(sandbox_dir)
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_message},
+    ]
+
+    final_answer = ""
+    iterations = 0
+
+    try:
+        for i in range(MAX_ITERATIONS):
+            iterations = i + 1
+            yield {"type": "status", "content": f"🤔 第 {iterations} 轮思考…"}
+
+            # ---- 流式调用模型 ----
+            content_buffer = ""
+            tool_calls_result = None
+
+            for event in chat_stream(messages=messages, tools=TOOLS_SCHEMA):
+                if event["type"] == "content":
+                    content_buffer += event["text"]
+                    # ★ 关键：立即把这段文字推给前端
+                    yield {"type": "text", "content": event["text"]}
+                elif event["type"] == "tool_calls":
+                    tool_calls_result = event["tool_calls"]
+
+            # 把助手回复加入历史
+            assistant_msg = {"role": "assistant", "content": content_buffer}
+            if tool_calls_result:
+                assistant_msg["tool_calls"] = [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": tc["arguments"],
+                        },
+                    }
+                    for tc in tool_calls_result
+                ]
+            messages.append(assistant_msg)
+
+            # 没有工具调用 → 结束
+            if not tool_calls_result:
+                final_answer = content_buffer
+                break
+
+            # ---- 执行工具 ----
+            for tc in tool_calls_result:
+                name = tc["name"]
+                try:
+                    args = json.loads(tc["arguments"])
+                except json.JSONDecodeError:
+                    args = {}
+
+                yield {"type": "tool_call", "name": name, "args": args}
+
+                result = execute_tool(name, args)
+
+                yield {"type": "tool_result", "name": name, "result": result}
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": json.dumps(result, ensure_ascii=False),
+                })
+
+        yield {"type": "iterations", "count": iterations}
+        yield {"type": "done", "content": final_answer or "（未生成最终回答）"}
+
+    except Exception as e:
+        yield {"type": "error", "content": str(e)}
+    finally:
         set_sandbox(None)
