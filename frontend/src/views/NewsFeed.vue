@@ -19,7 +19,7 @@
       <div class="news-column">
         <div class="news-heading">
           <h2>今日新闻</h2>
-          <button class="refresh-btn" :disabled="loading" @click="loadNews">
+          <button class="refresh-btn" :disabled="loading" @click="loadNews(true)">
             {{ loading ? '加载中…' : '🔄 刷新' }}
           </button>
         </div>
@@ -143,10 +143,17 @@ const username = String(route.params.username || '')
 const loading = ref(true)
 const news = ref<any[]>([])
 
-async function loadNews() {
+/**
+ * 拉取新闻列表。
+ * refresh=true 时绕过后端 10 分钟缓存，只有「刷新」按钮会传 true——
+ * 不传的话点刷新在缓存窗口内看不到任何变化。
+ */
+async function loadNews(refresh = false) {
   loading.value = true
   try {
-    news.value = await request.get('/news', { params: { limit: 30 } }) as any
+    news.value = await request.get('/news', {
+      params: { limit: 30, refresh },
+    }) as any
   } catch (e: any) {
     console.error(e)
   } finally {
