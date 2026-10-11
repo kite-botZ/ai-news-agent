@@ -256,6 +256,55 @@ def test_stream_emits_text_tool_events_then_done(monkeypatch, sandbox):
 
 
 # ============================================================
+# 回归：空白输出曾经把前端整片挡住
+# ============================================================
+
+def test_stream_drops_whitespace_only_text_chunks(monkeypatch, sandbox):
+    """调工具的轮次里模型会推 "\\n\\n" 这类纯空白，不能透传给前端。
+
+    JS 里 "\\n\\n" 是**真值**：前端把它攒进 streamText 之后，
+    `streamText || event.content` 这个兜底就整个失效了，
+    用户看到的是一块有内容但什么都不显示的空白面板。
+    """
+    stream = ScriptedStream([
+        [
+            {"type": "content", "text": "\n\n"},
+            {"type": "tool_calls", "tool_calls": [
+                {"id": "c1", "name": "list_dir", "arguments": "{}"},
+            ]},
+        ],
+        [{"type": "content", "text": "最终简报"}],
+    ])
+    monkeypatch.setattr(react, "chat_stream", stream)
+
+    events = list(react.run_react_stream_realtime(
+        system_prompt="s", user_message="u", sandbox_dir=sandbox,
+    ))
+
+    texts = [e["content"] for e in events if e["type"] == "text"]
+    assert texts == ["最终简报"], f"纯空白被透传给前端了：{texts}"
+
+
+def test_empty_or_whitespace_final_answer_is_reported_as_missing(monkeypatch, sandbox):
+    """模型最后一条回复是空白（或干脆什么都没说）时，done 必须带上明确的提示。
+
+    实测就会这样：模型把内容全写进文件，最后一条回复只剩 "\\n\\n"。
+    它非空、truthy，直接透传的话会顶掉「未生成」这句提示，前端弹出一个空白弹窗。
+    """
+    for blank in ("\n\n", "", "   "):
+        stream = ScriptedStream([[{"type": "content", "text": blank}]])
+        monkeypatch.setattr(react, "chat_stream", stream)
+
+        events = list(react.run_react_stream_realtime(
+            system_prompt="s", user_message="u", sandbox_dir=sandbox,
+        ))
+
+        done = [e for e in events if e["type"] == "done"]
+        assert len(done) == 1
+        assert done[0]["content"] == "（未生成最终回答）", f"blank={blank!r}"
+
+
+# ============================================================
 # 回归：走 HTTP SSE 时沙箱曾经完全失效
 # ============================================================
 

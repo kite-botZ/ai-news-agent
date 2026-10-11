@@ -176,7 +176,10 @@ def run_react_stream_realtime(
                 if event["type"] == "content":
                     content_buffer += event["text"]
                     # ★ 关键：立即把这段文字推给前端
-                    yield {"type": "text", "content": event["text"]}
+                    # 纯空白的片段不外发：模型在调工具的轮次里会推 "\n\n" 这类空块，
+                    # 前端攒下来会变成一个"非空但看不见"的字符串，把真正的兜底文案挡住。
+                    if event["text"].strip():
+                        yield {"type": "text", "content": event["text"]}
                 elif event["type"] == "tool_calls":
                     tool_calls_result = event["tool_calls"]
 
@@ -224,7 +227,9 @@ def run_react_stream_realtime(
                 })
 
         yield {"type": "iterations", "count": iterations}
-        yield {"type": "done", "content": final_answer or "（未生成最终回答）"}
+        # 必须 strip 后再判空：撞到 MAX_ITERATIONS 时 final_answer 可能是 "\n\n"，
+        # 它非空且 truthy，会把"未生成"这句提示顶掉，前端于是一片空白。
+        yield {"type": "done", "content": final_answer.strip() or "（未生成最终回答）"}
 
     except Exception as e:
         yield {"type": "error", "content": str(e)}

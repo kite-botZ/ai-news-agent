@@ -191,7 +191,21 @@ def generate_brief_stream(username: str) -> Generator[str, None, None]:
                 if saved_path is None:
                     saved_path = _persist_fallback(user_dir, content)
 
-                # 更新偏好里的 last_generated
+                if saved_path is None:
+                    # 既没写出文件，回复里也没有正文 —— 这次生成实际上是失败的。
+                    # 以前这里照样发 done，前端弹出的是一个**空白**弹窗，
+                    # 用户完全不知道发生了什么（模型撞到最大轮数时就是这样）。
+                    # 明确报错，让面板上留下一条看得见的原因。
+                    yield sse(
+                        "error",
+                        content=(
+                            "本次生成没有产出内容（模型没有写出简报文件），"
+                            "请重新生成一次。"
+                        ),
+                    )
+                    return
+
+                # 只在真的存下来时才标记，否则下次进来会以为"今天已经生成过了"
                 _update_last_generated(user_dir, today)
 
                 # brief_id 是简报文件的 stem（如 2026-10-12_00-13-07），
@@ -201,7 +215,7 @@ def generate_brief_stream(username: str) -> Generator[str, None, None]:
                     "done",
                     content=content,
                     date=today,
-                    brief_id=Path(saved_path).stem if saved_path else None,
+                    brief_id=Path(saved_path).stem,
                     saved_path=saved_path,
                     tool_count=tool_count,
                     iterations=iterations,

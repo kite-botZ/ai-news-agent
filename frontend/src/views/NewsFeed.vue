@@ -292,17 +292,31 @@ async function showGeneratedBrief(event: any) {
       const data = await request.get(
         `/users/${username}/briefs/${event.brief_id}`
       ) as any
-      briefContent.value = data.content || ''
-      modalDate.value = formatDate(event.brief_id)
+      // 必须 trim 后再存：只有空白的字符串是非空的，会让下面所有判空失效
+      briefContent.value = (data.content || '').trim()
+      if (briefContent.value) {
+        modalDate.value = formatDate(event.brief_id)
+      }
     } catch (e) {
       console.error('读取简报文件失败：', e)
     }
   }
 
-  // 兜底：文件没读到（模型没写成功）就用模型自己输出的文字
+  // 兜底：文件没读到（模型写到了回复里而不是文件里）就用模型自己输出的文字。
+  // 注意这里每一步都要 trim —— 模型在调工具的轮次会推 "\n\n" 这类纯空白，
+  // 攒起来是个"非空但看不见"的字符串，不 trim 的话会把后面的提示全挡掉，
+  // 用户看到的就是一个什么内容都没有的空白弹窗。
   if (!briefContent.value) {
-    briefContent.value = streamText.value || event.content || '（内容为空）'
-    modalDate.value = formatDate(localToday())
+    briefContent.value =
+      streamText.value.trim() || (event.content || '').trim()
+    if (briefContent.value) {
+      modalDate.value = formatDate(localToday())
+    }
+  }
+
+  if (!briefContent.value) {
+    // 真的什么都没有，就不要弹一个空窗 —— 那比报错更让人困惑
+    return
   }
 
   modalContent.value = briefContent.value

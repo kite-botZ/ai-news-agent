@@ -20,7 +20,7 @@
 | 前端 | Vue 3 + TypeScript + Vite + vue-router + axios |
 | 生成时机 | 进入新闻页时按需自动生成（当天已有则跳过） |
 | 存储 | 文件系统（每用户一个目录），无数据库 |
-| 测试 | pytest，96 个用例，不联网、不调模型 |
+| 测试 | pytest，101 个用例，不联网、不调模型 |
 
 ---
 
@@ -202,7 +202,7 @@ ReAct 循环：
 
 ### 跟着这个改动一起暴露出来的坑
 
-提速过程中撞到两个**静默错误**，都补了兜底和用例：
+提速过程中撞到三个**静默错误**，都补了兜底和用例：
 
 - **模型偶尔不调 `write_file`**（实测 6 次出现 1 次），直接把简报当成对话回复吐出来。
   原本要用 `_find_saved_path` 找文件落库，这时它会捞到**上一次**生成的简报，
@@ -211,6 +211,16 @@ ReAct 循环：
 - **前端原本显示的是模型的复述，不是文件内容**。所以"让模型别复述"一开始只是省时间，
   差点变成"弹窗变空白"。→ 改成 `done` 事件带 `brief_id`，前端拿它
   调 `GET /api/users/{u}/briefs/{id}` 读文件。简报只写一次，展示直接读盘。
+- **"空白"这件事本身藏着一个 JS 真值陷阱**。跑完一次，前端弹出的弹窗标题正常、
+  正文一片空白。原因是模型在调工具的轮次会推 `"\n\n"` 这类纯空白片段，
+  前端 `streamText` 攒下来后是 `"\n\n\n\n"` —— **非空、truthy**，
+  于是 `streamText || event.content` 这个兜底链整个失效，真正的文案被挡在后面；
+  交给 `v-html` 渲染又什么都不显示。三层一起修：后端不再外发纯空白片段，
+  真没产出内容时改发 `error` 事件而不是静默的 `done`（此时也不会标记
+  `last_generated`，否则用户回来会以为简报存好了），前端每步都 `trim()` 后再判空、
+  真没内容就干脆不弹窗。回归用例见 `test_stream_drops_whitespace_only_text_chunks`、
+  `test_empty_or_whitespace_final_answer_is_reported_as_missing`、
+  `test_stream_reports_error_when_model_produced_nothing`。
 
 ### 安全设计
 
@@ -259,7 +269,7 @@ ReAct 循环：
 
 ```bash
 cd backend
-python -m pytest        # 96 个用例，约 1 秒
+python -m pytest        # 101 个用例，约 1 秒
 ```
 
 全部**不联网、不调模型**，所以可以随便跑、不花钱：

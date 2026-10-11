@@ -10,6 +10,7 @@
 所以要用测试钉死。
 """
 
+import json
 import os
 import re
 import time
@@ -130,3 +131,88 @@ def test_fallback_creates_briefs_dir_if_missing(user_dir):
 
     assert saved is not None
     assert (user_dir / "briefs" / os.path.basename(saved)).exists()
+
+
+# ============================================================
+# SSE 事件流：成功要走 done、失败要走 error
+# ============================================================
+
+def _consume(username="alice"):
+    """跑一遍流式生成，把 SSE 解析成事件列表。"""
+    events = []
+    for chunk in service.generate_brief_stream(username):
+        if chunk.startswith("data:"):
+            events.append(json.loads(chunk[5:].strip()))
+    return events
+
+
+@pytest.fixture
+def fake_react(monkeypatch):
+    """把真正的 Agent 循环换掉，只关心 service 怎么组装 SSE 事件。
+
+    这里不跑模型，也就顺手绕开了真实的写文件 / 拉 RSS —— 测的是「事件流对不对」。
+    """
+
+    def install(*events, side_effect=None):
+        def gen(**_kwargs):
+            if side_effect is not None:
+                side_effect()
+            yield from events
+
+        monkeypatch.setattr(service, "run_react_stream_realtime", gen)
+
+    return install
+
+
+def test_stream_emits_done_with_brief_id_when_file_was_written(user_dir, fake_react):
+    def write_brief():
+        (user_dir / "briefs" / f"{TODAY}_10-00-00.md").write_text(
+            "正文" * 100, encoding="utf-8"
+        )
+
+    fake_react(
+        {"type": "done", "content": "今天的简报已生成并保存。"},
+        side_effect=write_brief,
+    )
+
+    events = _consume()
+    done = [e for e in events if e["type"] == "done"]
+
+    assert len(done) == 1
+    assert done[0]["brief_id"] == "2026-10-12_10-00-00"
+    assert "error" not in [e["type"] for e in events]
+
+
+def test_stream_reports_error_when_model_produced_nothing(user_dir, fake_react):
+    """模型既没写文件、回复里也只有空白时，必须报错。
+
+    以前这种情况照样发 done，前端弹出一个**空白**弹窗，用户完全不知道发生了什么。
+    模型撞到 MAX_ITERATIONS 时就是这个样子（final_answer 是空串或纯空白）。
+    """
+    fake_react({"type": "done", "content": "\n\n"})
+
+    events = _consume()
+    types = [e["type"] for e in events]
+
+    assert "error" in types, "什么都没产出却报了成功"
+    assert "done" not in types
+    assert "没有产出内容" in next(e["content"] for e in events if e["type"] == "error")
+
+
+def test_failed_generation_does_not_mark_last_generated(user_dir, fake_react):
+    """没生成成功就不能把 last_generated 标成今天。
+
+    标了的话，用户下次打开首页会看到「今天已生成」，以为简报存好了——
+    但历史里根本没有。又是一个静默错误。
+    """
+    prefs = user_dir / "preferences.json"
+    prefs.write_text(
+        json.dumps({"keywords": [], "last_generated": None}), encoding="utf-8"
+    )
+
+    fake_react({"type": "done", "content": "\n\n"})
+    _consume()
+
+    assert (
+        json.loads(prefs.read_text(encoding="utf-8"))["last_generated"] is None
+    ), "生成失败了却标记成已生成"
