@@ -1,7 +1,7 @@
 """新闻接口：GET /api/news?limit=30&refresh=false，拉取所有源的最新新闻（合并去重）。
 
-给前端 NewsFeed 页的「今日新闻」列表用。做 10 分钟内存缓存，避免每次刷新都去打
-9 个 RSS 源。
+给前端 NewsFeed 页的「今日新闻」列表用。做 10 分钟内存缓存，避免每次刷新都去
+重新并发抓一遍全部 RSS 源（源清单见 app/rss.py 的 RSS_SOURCES）。
 """
 
 import time
