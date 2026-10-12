@@ -15,7 +15,6 @@ logging.basicConfig(
 
 app = FastAPI(title="AI 新闻助手 API")
 
-# 允许跨域（前端地址通过 CORS_ORIGINS 环境变量配置）
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
@@ -24,7 +23,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 挂载路由
 app.include_router(users.router)
 app.include_router(news.router)
 

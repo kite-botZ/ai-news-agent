@@ -1,6 +1,6 @@
 """封装硅基流动的 LLM 调用。
 
-硅基流动兼容 OpenAI 接口，所以直接用 openai 库调用。
+硅基流动兼容 OpenAI 接口，直接用 openai 库。
 """
 
 from openai import OpenAI
@@ -13,7 +13,7 @@ from app.config import (
     THINKING_BUDGET,
 )
 
-# 全局 client（复用连接）
+# 全局 client，复用连接
 _client = OpenAI(
     api_key=SILICONFLOW_API_KEY,
     base_url=SILICONFLOW_BASE_URL,
@@ -30,12 +30,11 @@ def _build_kwargs(messages: list[dict], tools: list[dict] | None, stream: bool) 
 
     if tools:
         kwargs["tools"] = tools
-        kwargs["tool_choice"] = "auto"  # 让模型自己决定是否调用工具
+        kwargs["tool_choice"] = "auto"
 
-    # enable_thinking / thinking_budget 都不是 OpenAI 标准参数，只能走 extra_body。
-    #
-    # 默认给思考一个预算上限，而不是关掉：实测全关之后模型会失去规划能力，
-    # 一路调 fetch_rss 却永远不收手写文件，任务直接失败。
+    # enable_thinking / thinking_budget 不是 OpenAI 标准参数，只能走 extra_body。
+    # 给思考留预算而不是关掉它：全关之后模型会失去规划能力，一路调 fetch_rss
+    # 却始终不写文件，任务直接失败。要提速请调 THINKING_BUDGET。
     extra: dict = {}
     if not ENABLE_THINKING:
         extra["enable_thinking"] = False
@@ -48,57 +47,45 @@ def _build_kwargs(messages: list[dict], tools: list[dict] | None, stream: bool) 
 
 
 def chat(messages: list[dict], tools: list[dict] | None = None, stream: bool = False):
-    """调用 LLM。
-
-    参数：
-    - messages：OpenAI 格式的消息列表，如 [{"role": "user", "content": "你好"}]
-    - tools：工具 schema 列表（Function Calling 用），None 表示不启用工具
-    - stream：是否流式返回
-
-    返回：OpenAI 的 response 对象
-    """
+    """非流式调用，返回 OpenAI 的 response 对象。"""
     return _client.chat.completions.create(**_build_kwargs(messages, tools, stream))
 
 
 def simple_chat(prompt: str) -> str:
-    """最简单的对话：发一句话，返回字符串。用于测试 API 通不通。"""
+    """发一句话返回字符串，用来测 API 通不通。"""
     response = chat(messages=[{"role": "user", "content": prompt}])
     return response.choices[0].message.content
 
 
 def chat_stream(messages: list[dict], tools: list[dict] | None = None):
-    """流式调用 LLM。
+    """流式调用 LLM，逐个 chunk yield：
 
-    yield 每个 chunk：
-    - {"type": "reasoning", "text": "..."}       模型的思考过程（开了思考才有）
-    - {"type": "content", "text": "..."}         模型输出的一段文字
-    - {"type": "tool_calls", "tool_calls": [...]} 模型要调用的工具（完整）
+    - {"type": "reasoning", "text": "..."}       思考过程（开了思考才有）
+    - {"type": "content", "text": "..."}         正文片段
+    - {"type": "tool_calls", "tool_calls": [...]} 完整工具调用
 
-    思考过程和正文分开报，不要混在一个 content 流里：
-    思考是给用户看"Agent 在想什么"的，正文是最终回答，两者渲染方式完全不同。
+    思考与正文分开报：前者给用户看"Agent 在想什么"，后者是最终回答，渲染方式不同。
     """
 
     stream = _client.chat.completions.create(
         **_build_kwargs(messages, tools, stream=True)
     )
 
-    # 累积 tool_calls（流式下 tool_calls 会分片）
+    # 流式下 tool_calls 是分片传的，先按 index 攒齐
     tool_calls_buffer: list[dict] = []
 
     for chunk in stream:
         delta = chunk.choices[0].delta
 
-        # 0. 思考过程。Qwen3 开思考时逐 token 推 reasoning_content，
-        #    以前这里整个丢掉了 —— 白白浪费了一段本来就已经生成好的流式内容。
+        # Qwen3 开思考时逐 token 推 reasoning_content。不是 OpenAI 标准字段，
+        # 关掉思考时 delta 上根本没有它，所以用 getattr 取
         reasoning = getattr(delta, "reasoning_content", None)
         if reasoning:
             yield {"type": "reasoning", "text": reasoning}
 
-        # 1. 普通文本
         if delta.content:
             yield {"type": "content", "text": delta.content}
 
-        # 2. 工具调用（流式下的 tool_calls 是分片传递的）
         if delta.tool_calls:
             for tc in delta.tool_calls:
                 idx = tc.index
@@ -117,6 +104,5 @@ def chat_stream(messages: list[dict], tools: list[dict] | None = None):
                     if tc.function.arguments:
                         tool_calls_buffer[idx]["arguments"] += tc.function.arguments
 
-    # 3. 最后统一返回 tool_calls
     if tool_calls_buffer:
         yield {"type": "tool_calls", "tool_calls": tool_calls_buffer}

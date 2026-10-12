@@ -1,14 +1,4 @@
-"""用户管理接口。
-
-提供：
-- POST   /api/users                                    创建用户
-- GET    /api/users/{username}/preferences             读偏好
-- PUT    /api/users/{username}/preferences             更新偏好
-- GET    /api/users/{username}/briefs                  列简报
-- GET    /api/users/{username}/briefs/{date}           读简报
-- POST   /api/users/{username}/generate                同步生成简报
-- POST   /api/users/{username}/generate-stream         SSE 流式生成简报
-"""
+"""用户与简报的 HTTP 接口。路径一览见 /docs。"""
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse

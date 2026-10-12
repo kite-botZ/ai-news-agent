@@ -1,10 +1,7 @@
-"""LLM 流式封装：把供应商的 chunk 翻译成本项目的内部事件。
+"""LLM 流式封装测试：把供应商的 chunk 翻译成本项目的内部事件。
 
-重点在 `reasoning_content`。Qwen3 开了思考之后逐 token 推这个字段，
-而 `chat_stream` 以前只读 `delta.content`，把它整个丢掉了。
-
-丢掉的代价不是报错，是**面板上什么都没有** —— 内容明明已经生成出来了
-（token 都从网上传过来了），只是我们没往外要。所以这条链路值得钉死。
+重点是 reasoning_content。Qwen3 开思考后会逐 token 推这个字段，漏读不会报错，
+只是内容已经从网上传过来了、面板上却什么都没有。
 """
 
 from types import SimpleNamespace

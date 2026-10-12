@@ -1,19 +1,15 @@
 """Agent 业务层测试：简报落盘的「找文件 + 兜底」逻辑。
 
-这两条逻辑都在兜同一个真实故障：**模型偶尔不调 write_file**。实测跑 6 次会出现 1 次：
-模型读完新闻，直接把简报当成对话回复吐出来，文件一个没写。
-
-- _find_saved_path(since=...)  防止把上一次的旧简报当成本次生成的结果
-- _persist_fallback            实在没写，后端替它落盘
-
-这两个错误都是「静默」的：用户看到一份内容正常的简报，但它是旧的、或者根本没入库。
-所以要用测试钉死。
+两条逻辑兜的是同一个故障：模型偶尔不调 write_file（实测 6 次出现 1 次）。
+_find_saved_path 防止把旧简报当成本次结果，_persist_fallback 在后端替它落盘。
+两种失败都很静默，用户看到的是内容正常但陈旧或没入库的简报。
 """
 
 import json
 import os
 import re
 import time
+from datetime import datetime
 
 import pytest
 
@@ -23,11 +19,24 @@ from app.users import _BRIEF_STEM_PATTERN
 TODAY = "2026-10-12"
 
 
+class _FrozenDatetime:
+    """把 service 里的 datetime.now() 钉死在 TODAY。
+
+    测试用固定的文件名，service 那边却读真实时钟。不钉住的话，写测试的那天能过，
+    到了第二天文件名的日期对不上，_find_saved_path 找不到文件，测试就红了。
+    """
+
+    @staticmethod
+    def now():
+        return datetime(2026, 10, 12, 10, 0, 0)
+
+
 @pytest.fixture
 def user_dir(tmp_path, monkeypatch):
-    """把数据根目录指到临时目录，别碰真实的 data/。"""
+    """把数据根目录指到临时目录，别碰真实的 data/；时钟钉在 TODAY。"""
     monkeypatch.setattr(service, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(service, "USERS_DIR", tmp_path / "users")
+    monkeypatch.setattr(service, "datetime", _FrozenDatetime)
     d = tmp_path / "users" / "alice"
     (d / "briefs").mkdir(parents=True)
     return d
@@ -150,7 +159,7 @@ def _consume(username="alice"):
 def fake_react(monkeypatch):
     """把真正的 Agent 循环换掉，只关心 service 怎么组装 SSE 事件。
 
-    这里不跑模型，也就顺手绕开了真实的写文件 / 拉 RSS —— 测的是「事件流对不对」。
+    不跑模型，也就绕开了真实的写文件和拉 RSS。
     """
 
     def install(*events, side_effect=None):
@@ -184,11 +193,7 @@ def test_stream_emits_done_with_brief_id_when_file_was_written(user_dir, fake_re
 
 
 def test_stream_reports_error_when_model_produced_nothing(user_dir, fake_react):
-    """模型既没写文件、回复里也只有空白时，必须报错。
-
-    以前这种情况照样发 done，前端弹出一个**空白**弹窗，用户完全不知道发生了什么。
-    模型撞到 MAX_ITERATIONS 时就是这个样子（final_answer 是空串或纯空白）。
-    """
+    """没产出内容时要报 error 而不是 done，否则前端弹空白弹窗。"""
     fake_react({"type": "done", "content": "\n\n"})
 
     events = _consume()
@@ -202,8 +207,8 @@ def test_stream_reports_error_when_model_produced_nothing(user_dir, fake_react):
 def test_stream_flags_a_write_that_overwrote_an_existing_brief(user_dir, fake_react):
     """覆盖同名简报必须在进度里报出来。
 
-    文件名带秒级时间戳，正常永远不会撞。一旦撞上，就说明模型没照抄任务消息
-    给的文件名（八成是拿提示词里的示例时间戳顶替了），而这一撞会**盖掉上一份简报**。
+    文件名带秒级时间戳正常不会撞；一撞上就说明模型没照抄任务消息给的文件名
+    （多半是拿提示词里的示例时间戳顶替了），会盖掉上一份简报。
     """
     fake_react(
         {"type": "tool_call", "name": "write_file", "args": {}},
@@ -242,8 +247,7 @@ def test_stream_does_not_cry_wolf_on_a_normal_write(user_dir, fake_react):
 def test_failed_generation_does_not_mark_last_generated(user_dir, fake_react):
     """没生成成功就不能把 last_generated 标成今天。
 
-    标了的话，用户下次打开首页会看到「今天已生成」，以为简报存好了——
-    但历史里根本没有。又是一个静默错误。
+    标了的话，用户下次打开首页会看到「今天已生成」，但历史里根本没这份简报。
     """
     prefs = user_dir / "preferences.json"
     prefs.write_text(

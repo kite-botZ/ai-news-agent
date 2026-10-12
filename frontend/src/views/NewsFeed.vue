@@ -91,9 +91,8 @@
             </div>
 
             <template v-if="generating">
-              <!-- Agent 的思考过程。逐 token 推过来的，所以这里天然就是打字机效果，
-                   不需要前端做任何假动画。放在进度之上、用更淡的样式，
-                   目的是让"顺序由 LLM 自己决定"这件事看得见。 -->
+              <!-- Agent 的思考过程，逐 token 推过来，天然就是打字机效果。
+                   用更淡的样式放在进度之上，让"顺序由 LLM 自己决定"看得见。 -->
               <div v-if="reasoningText.trim()" class="reasoning-box">
                 <div class="reasoning-head">
                   <span>🧠 Agent 的思考</span>
@@ -170,11 +169,7 @@ const username = String(route.params.username || '')
 const loading = ref(true)
 const news = ref<any[]>([])
 
-/**
- * 拉取新闻列表。
- * refresh=true 时绕过后端 10 分钟缓存，只有「刷新」按钮会传 true——
- * 不传的话点刷新在缓存窗口内看不到任何变化。
- */
+/** refresh=true 绕过后端 10 分钟缓存，只有「刷新」按钮传 true，否则点了看不到变化。 */
 async function loadNews(refresh = false) {
   loading.value = true
   try {
@@ -216,7 +211,7 @@ const progressLog = ref<string[]>([])   // 工具调用进度（人话），生�
 const reasoningText = ref('')           // Agent 的思考过程（本轮），逐 token 推过来
 const reasoningEl = ref<HTMLElement | null>(null)   // 思考框，用来跟着新内容滚到底
 const streamText = ref('')              // 模型输出的文字（正常情况下只有一句总结）
-const briefContent = ref('')            // 简报正文——生成完从后端文件读回来
+const briefContent = ref('')            // 简报正文，生成完从后端文件读回来
 let abortController: AbortController | null = null
 
 async function generateBrief() {
@@ -287,14 +282,12 @@ async function generateBrief() {
 
 function handleEvent(event: any) {
   if (event.type === 'status' || event.type === 'progress') {
-    // 后端一直在推这些进度事件，以前前端直接丢掉了，面板只能干等
     if (event.content) progressLog.value.push(event.content)
-    // 每轮开头会推一条 status（"🤔 第 N 轮思考…"），拿它当分轮边界，
-    // 清掉上一轮的思考。不清的话四轮攒下来几百字，会把进度列表顶出屏幕。
+    // 每轮开头推一条 status（"🤔 第 N 轮思考…"），拿它当分轮边界清掉上一轮的
+    // 思考，否则四轮攒下来几百字会把进度列表顶出屏幕
     if (event.type === 'status') reasoningText.value = ''
   } else if (event.type === 'reasoning') {
-    // 逐 token 推过来的，累加即可 —— 打字机效果是后端真实的推送节奏，
-    // 不是前端拿定时器一个字一个字挤出来的假动画
+    // 后端真实的推送节奏就是逐 token，累加即可
     reasoningText.value += event.content
   } else if (event.type === 'text') {
     streamText.value += event.content
@@ -303,26 +296,21 @@ function handleEvent(event: any) {
   }
 }
 
-// 思考框有固定高度，新内容会落在可视区下面 —— 跟着滚到底，否则用户只看到开头
+// 思考框有固定高度，新内容落在可视区下面，跟着滚到底
 watch(reasoningText, async () => {
   await nextTick()
   const el = reasoningEl.value
   if (el) el.scrollTop = el.scrollHeight
 })
 
-/**
- * 生成完成：正文从后端存好的文件里读回来。
- *
- * 以前这里是拿模型最后一条回复当正文显示的，代价是模型要把整份简报复述一遍
- * （实测 957 字、约 32 秒）。简报本来就写进文件了，直接读文件既准又省。
- */
+/** 生成完成：正文从后端存好的文件读回来，比让模型复述一遍既准又省。 */
 async function showGeneratedBrief(event: any) {
   if (event.brief_id) {
     try {
       const data = await request.get(
         `/users/${username}/briefs/${event.brief_id}`
       ) as any
-      // 必须 trim 后再存：只有空白的字符串是非空的，会让下面所有判空失效
+      // 必须 trim 后再存：纯空白字符串是非空的，会让下面所有判空失效
       briefContent.value = (data.content || '').trim()
       if (briefContent.value) {
         modalDate.value = formatDate(event.brief_id)
@@ -332,10 +320,9 @@ async function showGeneratedBrief(event: any) {
     }
   }
 
-  // 兜底：文件没读到（模型写到了回复里而不是文件里）就用模型自己输出的文字。
-  // 注意这里每一步都要 trim —— 模型在调工具的轮次会推 "\n\n" 这类纯空白，
-  // 攒起来是个"非空但看不见"的字符串，不 trim 的话会把后面的提示全挡掉，
-  // 用户看到的就是一个什么内容都没有的空白弹窗。
+  // 兜底：模型把简报写进了回复而不是文件，就用它输出的文字。每一步都要 trim，
+  // 模型调工具那几轮会推 "\n\n" 这类纯空白，攒起来是"非空但看不见"的字符串，
+  // 会挡掉后面的提示，用户看到的就是一个空白弹窗
   if (!briefContent.value) {
     briefContent.value =
       streamText.value.trim() || (event.content || '').trim()
@@ -345,7 +332,7 @@ async function showGeneratedBrief(event: any) {
   }
 
   if (!briefContent.value) {
-    // 真的什么都没有，就不要弹一个空窗 —— 那比报错更让人困惑
+    // 真的什么都没有就别弹空窗，那比报错更让人困惑
     return
   }
 
@@ -358,7 +345,6 @@ function stopGenerate() {
   abortController?.abort()
 }
 
-// 简报正文的 Markdown 渲染结果
 const renderedBrief = computed(() => renderMarkdown(briefContent.value))
 
 // ==================== 历史简报 ====================
@@ -390,7 +376,6 @@ const showModal = ref(false)
 const modalDate = ref('')
 const modalContent = ref('')
 
-// 弹窗内容的 Markdown 渲染结果
 const renderedModal = computed(() => renderMarkdown(modalContent.value))
 
 /** 本地时区的今天（YYYY-MM-DD）。不能用 toISOString()，那是 UTC，会差一天 */
@@ -425,8 +410,7 @@ function goHome() {
 onMounted(async () => {
   loadNews()
 
-  // 简报列表加载成功、且今天还没有简报 → 自动生成一份
-  // （走 SSE 流式，右侧面板能实时看到进度，不会干等）
+  // 今天还没有简报就自动生成一份，走 SSE 流式，右侧面板能实时看到进度
   const loaded = await loadBriefs()
   if (loaded) {
     const today = localToday()
@@ -708,10 +692,8 @@ onMounted(async () => {
   word-break: break-word;
 }
 
-/* Agent 的思考过程。
-   风格上要明显比进度条"轻"：它是过程，不是结论，别抢简报正文的注意力。
-   固定高度 + 内部滚动 —— 思考会一直往上涨，不固定的话四轮下来
-   会把下面的工具进度整个顶出可视区。 */
+/* 思考过程样式要比进度条轻，它是过程不是结论。
+   固定高度 + 内部滚动：思考一直在涨，不固定会把下面的工具进度顶出可视区。 */
 .reasoning-box {
   margin-bottom: 12px;
   padding: 9px 11px;

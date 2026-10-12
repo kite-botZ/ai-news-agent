@@ -35,7 +35,6 @@ const error = ref('')
 async function handleEnter() {
   error.value = ''
 
-  // 校验用户名
   if (!username.value) {
     error.value = '请输入用户名'
     return
@@ -47,20 +46,16 @@ async function handleEnter() {
 
   loading.value = true
   try {
-    // 先试着读用户偏好
+    // 读偏好当探活：404 说明用户没建过
     try {
       await request.get(`/users/${username.value}/preferences`)
-      // 成功 → 用户存在
       router.push(`/users/${username.value}/news`)
     } catch (e: any) {
-      // 404 → 用户不存在，询问是否创建
       if (e.message.includes('不存在') || e.message.includes('404')) {
         const ok = confirm(`用户 ${username.value} 不存在，是否创建？`)
         if (!ok) return
 
-        // 创建用户
         await request.post('/users', { username: username.value })
-        // 创建成功 → 跳到偏好设置
         router.push(`/users/${username.value}/preferences`)
       } else {
         throw e

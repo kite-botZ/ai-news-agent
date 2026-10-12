@@ -1,11 +1,8 @@
 """用户管理模块测试。
 
-这里最要紧的是两条正则——它们都挡在"用户可控字符串直接拼进文件路径"前面：
-
-    _USERNAME_PATTERN      挡 data/users/<这里>/
-    _BRIEF_STEM_PATTERN    挡 briefs/<这里>.md
-
-所以除了正常的增删读写，重点是把越界的名字和日期喂进去，看能不能穿出去。
+最要紧的是两条正则，它们挡在「用户可控字符串直接拼进文件路径」前面：
+_USERNAME_PATTERN 挡 data/users/<这里>/，_BRIEF_STEM_PATTERN 挡 briefs/<这里>.md。
+除了正常的增删读写，重点是把越界的名字和日期喂进去看能不能穿出去。
 """
 
 import pytest
@@ -85,7 +82,7 @@ def test_preferences_missing_user_raises():
 
 
 def test_update_only_touches_allowed_fields():
-    """请求体里塞别的字段不该生效——不然用户能自己改 username 或生成时间。"""
+    """请求体里塞别的字段不该生效，不然用户能自己改 username 或生成时间。"""
     user_service.create_user("alice")
 
     updated = user_service.update_preferences("alice", {

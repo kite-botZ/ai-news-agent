@@ -1,17 +1,5 @@
-"""Agent 工具定义与执行。
-
-6 个工具：
-1. list_dir         - 列出目录内容
-2. read_file        - 读取文件
-3. search_content   - 在目录下按关键词搜索文件内容
-4. write_file       - 写入文件
-5. bash             - 执行 shell 命令（白名单限制）
-6. fetch_rss        - 拉取 RSS 新闻
-
-安全设计：
-- 所有文件操作限制在 data/ 目录内（沙箱）
-- bash 命令只允许白名单内的命令
-- fetch_rss 只允许白名单内的 RSS 源
+"""Agent 的 6 个工具及执行入口：list_dir / read_file / search_content /
+write_file / bash / fetch_rss。前 5 个限制在沙箱目录内，fetch_rss 限制在 RSS 白名单内。
 """
 
 import contextvars
@@ -22,28 +10,24 @@ from pathlib import Path
 from app.config import DATA_DIR
 from app.rss import RSS_WHITELIST, fetch_feed
 
-# 沙箱根目录（默认 data/）
 SANDBOX_DIR = Path(DATA_DIR)
 
-# 当前会话的用户目录（生成简报时会被设置为 data/users/<username>/）
-# 使用 contextvars 保证并发请求下每个请求的沙箱互相隔离
+# 当前沙箱。生成简报时是 data/users/<username>/，contextvars 保证并发请求互不干扰。
 _current_sandbox: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
     "current_sandbox", default=None
 )
 
 
 def set_sandbox(sandbox_dir: Path | None):
-    """设置当前会话的沙箱根目录。None 表示回到默认 data/。
+    """设置当前沙箱，None 表示回到默认 data/。
 
-    ⚠️ 只能在**同一个线程、同一个同步块**里配合工具调用使用（测试里常用）。
-    它挡不住线程池跳转 —— 见 execute_tool 的说明。生产路径请走
-    execute_tool(sandbox_dir=...) 显式传参。
+    只在同一个线程、同一段同步代码里有效，挡不住线程池跳转。
+    生产路径一律用 execute_tool(sandbox_dir=...)，不要依赖这个。
     """
     _current_sandbox.set(sandbox_dir)
 
 
 def _get_sandbox() -> Path:
-    """获取当前沙箱根目录。"""
     sb = _current_sandbox.get()
     return sb if sb else SANDBOX_DIR
 
@@ -64,7 +48,6 @@ def _safe_path(path: str) -> Path:
 # ============================================================
 
 def tool_list_dir(path: str = ".") -> dict:
-    """列出目录内容。"""
     try:
         target = _safe_path(path)
         if not target.exists():
@@ -98,7 +81,7 @@ def tool_read_file(path: str) -> dict:
             return {"error": f"不是文件：{path}"}
 
         content = target.read_text(encoding="utf-8")
-        # 超过 5000 字截断，防止撑爆上下文
+        # 截断防止撑爆上下文
         if len(content) > 5000:
             content = content[:5000] + f"\n\n...（已截断，原文共 {len(content)} 字）"
         return {"path": path, "content": content}
@@ -147,13 +130,11 @@ def tool_search_content(keyword: str, dir: str = ".") -> dict:
 # ============================================================
 
 def tool_write_file(path: str, content: str) -> dict:
-    """写入文件（覆盖）。
+    """写入文件，覆盖已有内容。
 
-    覆盖同名文件时，把原来那个的字节数一并报出来。这个项目真的这样丢过简报：
-    模型偶尔会把提示词里那个示例时间戳当成文件名，于是同一天第二次生成写到
-    和第一次完全相同的路径上，把上一份悄悄盖掉——历史里少一份，没有任何报错。
-    （提示词里的例子已经改成占位符了，这里是第二道防线。）
-    报出来至少能在 SSE 进度里看见，而不是无声无息。
+    覆盖同名文件时在返回值里报出原大小。文件名叫 14:30 实际 23:36 写的这类情况
+    （模型照抄了提示词里的示例时间戳）会让同一天第二次生成盖掉第一份简报，
+    报出来才能在 SSE 进度里看见。
     """
     try:
         target = _safe_path(path)
@@ -175,11 +156,8 @@ def tool_write_file(path: str, content: str) -> dict:
 # 工具 5：bash
 # ============================================================
 
-# 命令白名单（同时支持 Windows 和 Linux）
 _BASH_WHITELIST = [
-    # Linux 命令
     "ls", "cat", "echo", "pwd", "date", "wc", "head", "tail", "grep", "find",
-    # Windows 命令
     "dir", "type", "cd", "where", "findstr",
 ]
 
@@ -224,19 +202,17 @@ def _to_windows_command(command: str) -> str:
     return " ".join([mapped, *args])
 
 
-# 管道 / 重定向 / 命令连接符 / 变量展开。
-# 这个工具只用来「看一眼目录」，用不到这些；放开的代价是白名单形同虚设——
-# `echo hi; rm -rf /` 的命令名是合法的 echo，但分号后面想跑什么就跑什么。
+# 管道、重定向、命令连接符、变量展开一律拒绝。
+# 这个工具只用来「看一眼目录」，用不到这些；开放的代价是白名单形同虚设：
+# `echo hi; rm -rf /` 的命令名是合法的 echo，分号后面才是真正的命令。
 _SHELL_METACHARS = (";", "|", "&", ">", "<", "`", "$", "%", "\n", "\r")
 
 
 def _arguments_stay_in_sandbox(command: str) -> bool:
     """检查命令参数里的路径有没有爬出沙箱。
 
-    白名单只管得住命令名，管不住参数：`cat ../../.env` 的命令名是合法的 cat，
-    但参数能读到沙箱外面（比如 backend/.env 里的 API Key）。
-    所以每个非选项的 token 都过一遍 _safe_path —— 不是路径的词（搜索关键字之类）
-    会被当成沙箱内的相对路径，无害地通过。
+    白名单只管命令名，管不住参数：`cat ../../.env` 命令名合法，
+    但参数能读到沙箱外的 API Key。非选项的 token 都过一遍 _safe_path。
     """
     for token in command.split()[1:]:
         if token.startswith("-"):
@@ -295,22 +271,13 @@ def tool_bash(command: str) -> dict:
 # 工具 6：fetch_rss（拉取 RSS 新闻）
 # ============================================================
 
-# 模型在写简报时真正用得上的字段。
-# image 是给前端卡片用的长 URL，source 和 source_name 内容重复——都裁掉。
-# 这些字段会留在消息历史里，之后每一轮都要重新 prefill，裁掉能省不少时间。
+# 只保留模型写简报用得上的字段。image 是给前端卡片的长 URL、source 与 source_name
+# 重复，都裁掉。这些字段会留在消息历史里被后续每一轮重新 prefill，裁掉省时间。
 _NEWS_FIELDS_FOR_LLM = ("title", "link", "summary", "source_name")
 
 
 def tool_fetch_rss(url: str, limit: int = 5) -> dict:
-    """拉取 RSS 源，返回新闻列表（只保留模型用得上的字段）。
-
-    抓取与解析逻辑统一放在 app/rss.py，这里只做转发 + 瘦身，
-    保证 Agent 工具和 /api/news 接口用的是同一套实现。
-
-    参数：
-    - url：RSS 地址，必须在白名单内
-    - limit：最多返回几条
-    """
+    """拉取 RSS 源。抓取解析在 app/rss.py，这里只做转发和字段瘦身。"""
     result = fetch_feed(url, limit=limit)
     if "error" in result:
         return result
@@ -469,24 +436,20 @@ TOOLS_REGISTRY = {
 def execute_tool(name: str, args: dict, sandbox_dir: Path | None = None) -> dict:
     """执行一个工具，异常统一返回 error。
 
-    sandbox_dir 必须由调用方**显式传入**，不能指望外面先调 set_sandbox()：
+    sandbox_dir 必须由调用方显式传入，不能指望外面先调 set_sandbox()。
+    StreamingResponse 走 iterate_in_threadpool 消费同步生成器，每 next() 一次
+    就是一次新的线程池调度，anyio 每次从事件循环线程重拷上下文，
+    所以生成器内部 set 的值下次恢复就没了，_get_sandbox() 静默退回 data/：
+    读不到本用户的偏好，且隔离失效、A 用户能读到 B 用户的文件。
 
-    Starlette 消费同步生成器（StreamingResponse）走的是 iterate_in_threadpool，
-    每调用一次 next() 就是一次新的线程池调度，而 anyio 每次都是从事件循环线程
-    重新拷一份上下文。于是生成器内部 set 的值在下一次恢复时就没了，
-    _get_sandbox() 会静默退回全局的 data/ —— 表现为「读不到本用户的 preferences.json」，
-    更糟的是沙箱隔离失效，A 用户能读到 B 用户的文件。
-
-    这里 set 之后**紧跟着**调用工具函数，同一个线程、中间没有线程池跳转，
-    所以 contextvar 一定可见。
+    这里 set 之后紧跟着调工具函数，同线程、无跳转，contextvar 一定可见。
     """
     fn = TOOLS_REGISTRY.get(name)
     if not fn:
         return {"error": f"未知工具：{name}"}
 
-    # 没显式传就沿用上下文里的沙箱（set_sandbox 设的那个，默认 data/）。
-    # 注意不能写成 "无条件 set(sandbox_dir)"：那样默认值 None 会把
-    # set_sandbox() 设好的沙箱一起覆盖掉，调用方会静默落到 data/。
+    # 不能写成无条件的 set(sandbox_dir)：默认值 None 会把 set_sandbox() 设好的
+    # 沙箱一起覆盖掉，调用方静默落到 data/。
     token = _current_sandbox.set(sandbox_dir) if sandbox_dir is not None else None
     try:
         return fn(**args)

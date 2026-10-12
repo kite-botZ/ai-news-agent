@@ -1,22 +1,10 @@
-"""ReAct 循环。
+"""手写的 ReAct 循环：把 system prompt + 用户消息 + 工具 schema 发给模型，
+模型要么直接回答（结束），要么返回 tool_calls；后端执行后把结果作为 tool 消息
+追加进历史再问一遍，直到它不再调工具或达到 MAX_ITERATIONS。
 
-核心思想：让模型在推理（Reasoning）和行动（Acting）之间循环。
+顺序和次数都不由这里决定，循环本身不认识任何具体工具。
 
-流程：
-1. 把 system prompt + 用户消息 + 工具 schema 发给模型
-2. 模型判断：
-   - 直接回答 → 结束
-   - 需要调用工具 → 返回 tool_calls
-3. 后端执行工具，把结果作为 tool 消息追加到历史
-4. 把更新后的消息历史再发给模型
-5. 重复直到模型不再调用工具，或达到最大轮数
-
-支持：
-- sandbox_dir：指定工具操作的沙箱根目录（比如某个用户的目录）
-
-注意 sandbox_dir 是**逐次显式传给 execute_tool 的**，不是靠全局状态。
-原因见 tools.execute_tool 的注释：流式那条路径每 yield 一次就换一次线程池
-调度和上下文，生成器里 set 的全局沙箱根本活不到下一次恢复。
+sandbox_dir 逐次显式传给 execute_tool，不靠全局状态，原因见 tools.execute_tool。
 """
 
 import json
@@ -35,18 +23,7 @@ def run_react(
 ) -> dict:
     """跑一次 ReAct 循环。
 
-    参数：
-    - system_prompt：系统提示词，定义 Agent 的角色
-    - user_message：用户的输入
-    - verbose：是否打印中间过程（调试用）
-    - sandbox_dir：工具操作的沙箱根目录。None 表示默认的 data/ 目录
-
-    返回：
-    {
-        "answer": 最终回答,
-        "tool_calls": [{"name": ..., "args": ..., "result": ...}, ...],
-        "iterations": 迭代了几轮
-    }
+    返回 {"answer": 最终回答, "tool_calls": [{"name","args","result"}], "iterations": 轮数}。
     """
 
     messages = [
@@ -63,14 +40,11 @@ def run_react(
         if verbose:
             print(f"\n--- 第 {iterations} 轮 ---")
 
-        # 1. 调用模型
         response = chat(messages=messages, tools=TOOLS_SCHEMA)
         message = response.choices[0].message
 
-        # 2. 检查是否有工具调用
         tool_calls = message.tool_calls or []
 
-        # 把助手的回复加入历史
         assistant_msg = {"role": "assistant", "content": message.content or ""}
         if tool_calls:
             assistant_msg["tool_calls"] = [
@@ -96,7 +70,6 @@ def run_react(
                 "iterations": iterations,
             }
 
-        # 4. 有工具调用 → 逐个执行
         for tc in tool_calls:
             tool_name = tc.function.name
             try:
@@ -107,7 +80,6 @@ def run_react(
             if verbose:
                 print(f"调用工具：{tool_name}({tool_args})")
 
-            # 执行工具
             result = execute_tool(tool_name, tool_args, sandbox_dir=sandbox_dir)
 
             if verbose:
@@ -119,14 +91,12 @@ def run_react(
                 "result": result,
             })
 
-            # 把工具结果加入历史
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,
                 "content": json.dumps(result, ensure_ascii=False),
             })
 
-    # 达到最大轮数还没结束
     return {
         "answer": "（已达到最大工具调用轮数，未能生成最终回答）",
         "tool_calls": tool_call_records,
@@ -143,17 +113,9 @@ def run_react_stream_realtime(
     user_message: str,
     sandbox_dir: Path | None = None,
 ):
-    """真·流式 ReAct。
+    """流式 ReAct，边跑边 yield 事件：
 
-    yield 事件：
-    - {"type": "status", "content": "..."}            状态
-    - {"type": "reasoning", "content": "..."}        模型的思考过程（逐段）
-    - {"type": "text", "content": "..."}              **模型输出的文字片段**
-    - {"type": "tool_call", "name": "...", "args": ...}
-    - {"type": "tool_result", "name": "...", "result": ...}
-    - {"type": "iterations", "count": N}
-    - {"type": "done", "content": "..."}              最终完整回答
-    - {"type": "error", "content": "..."}
+    status / reasoning / text / tool_call / tool_result / iterations / done / error
     """
 
     messages = [
@@ -176,14 +138,13 @@ def run_react_stream_realtime(
             for event in chat_stream(messages=messages, tools=TOOLS_SCHEMA):
                 if event["type"] == "content":
                     content_buffer += event["text"]
-                    # ★ 关键：立即把这段文字推给前端
-                    # 纯空白的片段不外发：模型在调工具的轮次里会推 "\n\n" 这类空块，
-                    # 前端攒下来会变成一个"非空但看不见"的字符串，把真正的兜底文案挡住。
+                    # 纯空白不外发：模型调工具那几轮会推 "\n\n"，前端在 JS 里把
+                    # 它当真值攒起来，会挡掉真正的兜底文案
                     if event["text"].strip():
                         yield {"type": "text", "content": event["text"]}
                 elif event["type"] == "reasoning":
-                    # 思考过程只往前端推，**不进 content_buffer**：
-                    # 它是过程，不是最终回答。混进去会让 done 的 content 变成一堆内心戏。
+                    # 只推给前端，不进 content_buffer：混进去 done 的 content 会变成
+                    # 一堆内心戏，而那个 content 是要落盘成简报的
                     yield {"type": "reasoning", "content": event["text"]}
                 elif event["type"] == "tool_calls":
                     tool_calls_result = event["tool_calls"]
@@ -219,8 +180,7 @@ def run_react_stream_realtime(
 
                 yield {"type": "tool_call", "name": name, "args": args}
 
-                # 沙箱在这里逐次显式传入。上面那个 yield 之后可能已经换过线程了，
-                # 所以绝不能靠"进入生成器时设一次全局沙箱"。
+                # 逐次显式传沙箱：上面那个 yield 之后可能已经换过线程了
                 result = execute_tool(name, args, sandbox_dir=sandbox_dir)
 
                 yield {"type": "tool_result", "name": name, "result": result}
@@ -232,8 +192,8 @@ def run_react_stream_realtime(
                 })
 
         yield {"type": "iterations", "count": iterations}
-        # 必须 strip 后再判空：撞到 MAX_ITERATIONS 时 final_answer 可能是 "\n\n"，
-        # 它非空且 truthy，会把"未生成"这句提示顶掉，前端于是一片空白。
+        # 先 strip 再判空：final_answer 可能是 "\n\n"，truthy 但看不见，
+        # 会顶掉这句提示，前端于是一片空白
         yield {"type": "done", "content": final_answer.strip() or "（未生成最终回答）"}
 
     except Exception as e:

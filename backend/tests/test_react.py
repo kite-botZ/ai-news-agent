@@ -1,12 +1,7 @@
-"""ReAct 循环测试。
+"""ReAct 循环测试：用假 LLM 跑，不联网、不花钱，只验证循环的控制流。
 
-用假的 LLM 跑，不联网、不花 API 钱。测的是循环本身的控制流：
-- 模型不调工具 → 一轮就结束
-- 模型调工具 → 结果正确回填进消息历史，且 tool_call_id 必须配对
-- 模型一直要求调工具 → 到 MAX_ITERATIONS 必须停下来，不能转圈到死
-- 跑完沙箱必须恢复，否则下一个用户的请求会串到别人的目录
-
-换掉 LLM 之后，循环就是一个普通的状态机，可以逐个出口验证。
+换掉 LLM 后循环就是个普通状态机，可以逐个出口验证：不调工具一轮就结束；调了工具结果要
+回填进消息历史且 tool_call_id 配对；一直要调工具时到 MAX_ITERATIONS 必须停；跑完沙箱必须恢复。
 """
 
 import json
@@ -73,8 +68,7 @@ class ScriptedStream:
 def sandbox(tmp_path):
     """一个模拟的用户目录（含 preferences.json）。
 
-    这里**故意不调 set_sandbox**：沙箱现在是 execute_tool 的显式参数，不是全局状态。
-    留着那句反而会把坑盖住——见文件末尾那条回归用例。
+    故意不调 set_sandbox：沙箱现在靠 execute_tool 的显式参数传，不是全局状态。
     """
     (tmp_path / "preferences.json").write_text(
         '{"keywords": ["AI"]}', encoding="utf-8"
@@ -198,7 +192,7 @@ def test_tools_run_inside_the_given_sandbox(monkeypatch, sandbox):
 
 
 def test_run_react_leaves_global_sandbox_untouched(monkeypatch, sandbox):
-    """循环不该去动全局沙箱——动了就会在并发时串到别人的目录。"""
+    """循环不该去动全局沙箱，动了就会在并发时串到别人的目录。"""
     set_sandbox(None)
     llm = ScriptedLLM([_response(content="ok")])
     monkeypatch.setattr(react, "chat", llm)
@@ -249,18 +243,14 @@ def test_stream_emits_text_tool_events_then_done(monkeypatch, sandbox):
     assert "tool_call" in types
     assert "tool_result" in types
 
-    # 中间的模型输出必须原样透传——前端的打字机效果靠的就是这些 text 事件
+    # 中间的模型输出必须原样透传，前端的打字机效果靠的就是这些 text 事件
     assert any(
         e["type"] == "text" and e["content"] == "先看看目录。" for e in events
     )
 
 
 def test_stream_forwards_reasoning_without_polluting_the_answer(monkeypatch, sandbox):
-    """思考过程要推给前端，但**不能混进最终回答**。
-
-    混进去的话 done 的 content 会变成一堆"用户可能想知道…我先看看…"的内心戏，
-    而那个 content 是要落盘成简报的（模型忘了写文件时由 _persist_fallback 兜底）。
-    """
+    """思考过程要推给前端，但不能混进最终回答（done 的 content 会落盘成简报）。"""
     stream = ScriptedStream([
         [
             {"type": "reasoning", "text": "用户要看 AI 新闻，"},
@@ -305,15 +295,14 @@ def test_reasoning_is_not_treated_as_final_text(monkeypatch, sandbox):
 
 
 # ============================================================
-# 回归：空白输出曾经把前端整片挡住
+# 回归：纯空白输出不能透传给前端
 # ============================================================
 
 def test_stream_drops_whitespace_only_text_chunks(monkeypatch, sandbox):
     """调工具的轮次里模型会推 "\\n\\n" 这类纯空白，不能透传给前端。
 
-    JS 里 "\\n\\n" 是**真值**：前端把它攒进 streamText 之后，
-    `streamText || event.content` 这个兜底就整个失效了，
-    用户看到的是一块有内容但什么都不显示的空白面板。
+    JS 里 "\\n\\n" 是真值，前端攒进 streamText 后 `streamText || event.content` 兜底失效，
+    用户会看到一块什么都不显示的空白面板。
     """
     stream = ScriptedStream([
         [
@@ -335,10 +324,10 @@ def test_stream_drops_whitespace_only_text_chunks(monkeypatch, sandbox):
 
 
 def test_empty_or_whitespace_final_answer_is_reported_as_missing(monkeypatch, sandbox):
-    """模型最后一条回复是空白（或干脆什么都没说）时，done 必须带上明确的提示。
+    """模型最后一条回复是空白（或什么都没说）时，done 必须带上「未生成」提示。
 
-    实测就会这样：模型把内容全写进文件，最后一条回复只剩 "\\n\\n"。
-    它非空、truthy，直接透传的话会顶掉「未生成」这句提示，前端弹出一个空白弹窗。
+    模型把内容全写进文件时，最后一条回复会只剩 "\\n\\n"。它 truthy，
+    直接透传会顶掉提示，前端弹空白弹窗。
     """
     for blank in ("\n\n", "", "   "):
         stream = ScriptedStream([[{"type": "content", "text": blank}]])
@@ -354,24 +343,16 @@ def test_empty_or_whitespace_final_answer_is_reported_as_missing(monkeypatch, sa
 
 
 # ============================================================
-# 回归：走 HTTP SSE 时沙箱曾经完全失效
+# 回归：走 HTTP SSE 时沙箱不能失效
 # ============================================================
 
 def test_sandbox_survives_starlette_threadpool(monkeypatch, tmp_path):
-    """这条用例存在的唯一理由：上面那些用 list() 直接消费生成器的测试**抓不到**这个坑。
+    """必须用和 Starlette 一样的方式消费生成器，用 list() 直接消费抓不到这个坑。
 
-    前端真正走的是 HTTP SSE，Starlette 用 iterate_in_threadpool 消费同步生成器，
-    每调用一次 next() 就是一次新的线程池调度，而 anyio 每次都从事件循环线程
-    重新拷一份上下文。结果：生成器里 set 的全局沙箱在下一次恢复时就没了，
-    _get_sandbox() 静默退回 data/。
-
-    实测表现（改之前，走真 HTTP）：
-        📖 正在读取偏好…
-        ⚠️ read_file 失败：文件不存在：preferences.json
-    模型读不到偏好，却照样硬写了一份简报 —— 不报错，只是内容不对。
-    更糟的是沙箱隔离失效：A 用户可以读到 B 用户的文件。
-
-    所以这里必须用和 Starlette **一模一样**的方式消费，否则等于没测。
+    前端走的是 HTTP SSE，Starlette 用 iterate_in_threadpool 消费同步生成器，每调一次
+    next() 就是一次新的线程池调度，anyio 会从事件循环线程重新拷一份上下文。生成器里
+    set 的全局沙箱于是下一次恢复时就没了，_get_sandbox() 静默退回 data/：模型读不到偏好
+    却照样硬写简报，A 用户还能读到 B 用户的文件。
     """
     user_dir = tmp_path / "users" / "alice"
     user_dir.mkdir(parents=True)

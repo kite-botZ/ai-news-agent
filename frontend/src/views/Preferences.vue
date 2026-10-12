@@ -141,7 +141,7 @@ async function save() {
     message.value = '偏好已保存！'
     messageType.value = 'success'
 
-    // 1 秒后跳到简报页
+    // 停一下让用户看到保存成功的提示，再跳简报页
     setTimeout(() => {
       router.push(`/users/${username}/news`)
     }, 800)

@@ -1,8 +1,6 @@
 """Agent 业务封装：为指定用户生成简报。
 
-支持两种模式：
-- generate_brief_for_user：一次性返回（同步，接口用）
-- generate_brief_stream：流式返回（SSE，前端用）
+generate_brief_stream 是前端用的 SSE 流式版，generate_brief_for_user 是同步版。
 """
 
 import json
@@ -41,11 +39,10 @@ def _build_context(username: str) -> tuple[Path, str, str, str]:
 
 
 def _find_saved_path(user_dir: Path, today: str, since: float | None = None) -> str | None:
-    """找今天最新生成的简报文件。
+    """找今天最新生成的简报文件。since 是本次生成的开始时间戳。
 
-    since 是本次生成的开始时间戳。必须传：模型偶尔会忘记调 write_file，
-    这时如果只按"今天最新的文件"来找，会把**上一次**生成的简报当成这次的结果，
-    前端就会弹出一份旧简报，还显示成刚生成的——静默错误，比报错更难发现。
+    since 必须传：模型偶尔不调 write_file，这时只按"今天最新"来找会捞到上一次的
+    简报，当成这次的结果返回。
     """
     briefs_dir = user_dir / "briefs"
     if not briefs_dir.exists():
@@ -61,13 +58,12 @@ def _find_saved_path(user_dir: Path, today: str, since: float | None = None) -> 
 
 
 def _persist_fallback(user_dir: Path, content: str) -> str | None:
-    """兜底：模型忘了调 write_file，但正文其实已经生成出来了——后端替它落盘。
+    """兜底：模型没调 write_file，但正文已经生成出来了，由后端替它落盘。
 
-    实测模型偶尔会跳过写文件这一步，直接把简报当成对话回复吐出来。
-    不兜底的话这次内容会凭空消失：历史简报里没有它，而偏好里的
-    last_generated 又已经被标成今天，用户会以为简报已经存好了。
+    模型偶尔会把简报当成对话回复吐出来而不写文件。不兜底的话这些内容会凭空
+    消失，而 last_generated 已经标成今天，用户以为已经存好了。
 
-    返回落盘后的相对路径；内容太短（多半是"已生成"之类的客套话）则返回 None。
+    返回相对路径；内容太短则返回 None（多半是"已生成"之类的客套话）。
     """
     text = (content or "").strip()
     if len(text) < 100:
@@ -144,12 +140,11 @@ def generate_brief_stream(username: str) -> Generator[str, None, None]:
                 yield sse("status", content=event["content"])
 
             elif etype == "text":
-                # 模型输出的文字片段 → 立即转发给前端（打字机效果）
                 yield sse("text", content=event["content"])
 
             elif etype == "reasoning":
-                # 思考过程 → 前端单独一栏显示。逐 token 推过来，本身就是打字机效果，
-                # 而且不用为此多花一秒或一分钱：内容本来就已经生成好了，以前只是没要。
+                # 思考过程走单独一栏，不混进 text：它逐 token 推过来，本身就是打字机
+                # 效果，而且这部分内容模型已经生成好了，转发不额外花时间。
                 yield sse("reasoning", content=event["content"])
 
             elif etype == "tool_call":
@@ -182,10 +177,8 @@ def generate_brief_stream(username: str) -> Generator[str, None, None]:
                             tool=name,
                         )
                     elif name == "write_file":
-                        # 覆盖了同名文件要说出来。正常情况不会发生（文件名带秒级
-                        # 时间戳），一旦发生就说明模型没照抄任务消息给的文件名，
-                        # 很可能是拿提示词里的示例时间戳顶替了——那意味着上一份
-                        # 简报已经被盖掉。让它在面板上留一行，别无声无息。
+                        # 覆盖同名文件只在模型没照抄任务消息给的文件名时发生，意味着
+                        # 上一份简报已被盖掉，得在面板上留一行。
                         if result.get("overwrote_bytes"):
                             yield sse(
                                 "progress",
@@ -212,10 +205,8 @@ def generate_brief_stream(username: str) -> Generator[str, None, None]:
                     saved_path = _persist_fallback(user_dir, content)
 
                 if saved_path is None:
-                    # 既没写出文件，回复里也没有正文 —— 这次生成实际上是失败的。
-                    # 以前这里照样发 done，前端弹出的是一个**空白**弹窗，
-                    # 用户完全不知道发生了什么（模型撞到最大轮数时就是这样）。
-                    # 明确报错，让面板上留下一条看得见的原因。
+                    # 既没写出文件、回复里也没有正文，这次生成就是失败的（模型撞到
+                    # 最大轮数时如此）。报错，别发 done，前端会弹出一个空白弹窗。
                     yield sse(
                         "error",
                         content=(
@@ -228,9 +219,8 @@ def generate_brief_stream(username: str) -> Generator[str, None, None]:
                 # 只在真的存下来时才标记，否则下次进来会以为"今天已经生成过了"
                 _update_last_generated(user_dir, today)
 
-                # brief_id 是简报文件的 stem（如 2026-10-12_00-13-07），
-                # 前端拿到它就能直接调 GET /briefs/{brief_id} 把正文读回来，
-                # 不用再让模型在最后一条回复里把简报复述一遍（那要白等 30 秒）。
+                # brief_id 是简报文件的 stem，前端拿它调 GET /briefs/{brief_id} 就能
+                # 读回正文，不必让模型在最后一条回复里把简报复述一遍。
                 yield sse(
                     "done",
                     content=content,

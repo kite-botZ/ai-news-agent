@@ -31,10 +31,7 @@ def sandbox(tmp_path):
 # ============================================================
 
 def test_schema_and_registry_match_exactly():
-    """给模型看的工具清单，必须和真正能执行的实现完全一致。
-
-    少一个 → 模型调了会报「未知工具」；多一个 → 等于在骗模型。
-    """
+    """给模型看的工具清单必须和真正能执行的实现完全一致，少一个会报未知工具，多一个等于骗模型。"""
     schema_names = {t["function"]["name"] for t in TOOLS_SCHEMA}
     assert schema_names == set(TOOLS_REGISTRY)
 
@@ -93,10 +90,7 @@ def test_bash_rejects_shell_metachars(command):
 
 
 def test_bash_rejects_path_arguments_outside_sandbox(sandbox):
-    """最有意思的一条：cat 是合法命令，但 `cat ../../.env` 能读到 API Key。
-
-    沙箱必须连参数一起管，否则白名单就是个摆设。
-    """
+    """cat 是白名单命令，但 `cat ../../.env` 能读到 API Key，所以沙箱必须连参数一起管。"""
     result = tool_bash("cat ../../.env")
     assert "error" in result
     assert "越界" in result["error"]
@@ -116,7 +110,7 @@ def test_bash_cwd_is_the_sandbox(sandbox):
 
 
 def test_windows_command_translation():
-    """Windows 上 cmd.exe 不认 GNU 短选项，必须翻译（这是个真实踩过的坑）。"""
+    """Windows 上 cmd.exe 不认 GNU 短选项，必须翻译。"""
     assert _to_windows_command("pwd") == "cd"
     assert _to_windows_command("ls -la") == "dir /a"
     assert _to_windows_command("grep -i agent a.txt") == "findstr /i agent a.txt"
@@ -135,7 +129,7 @@ def test_fetch_rss_rejects_url_outside_whitelist():
 
 
 def test_fetch_rss_rejects_lookalike_domain():
-    """拼一个像白名单的域名也不行——校验的是完整 URL 相等，不是包含关系。"""
+    """拼一个像白名单的域名也不行，校验的是完整 URL 相等而非包含关系。"""
     result = tool_fetch_rss("https://www.ithome.com/rss/?x=1")
     assert "error" in result
 
@@ -177,8 +171,8 @@ def test_explicit_sandbox_wins_over_ambient(sandbox, tmp_path):
 def test_omitting_sandbox_keeps_ambient(sandbox):
     """不传 sandbox_dir 时必须沿用 set_sandbox 设的沙箱。
 
-    这里曾经埋着一个坑：写成无条件 set(sandbox_dir)，默认值 None
-    会把 set_sandbox() 设好的沙箱一起覆盖掉，于是所有调用静默落到 data/。
+    不能写成无条件 set(sandbox_dir)：默认值 None 会把 set_sandbox() 设好的沙箱覆盖掉，
+    所有调用静默落到 data/。
     """
     (sandbox / "note.txt").write_text("我的目录", encoding="utf-8")
 
@@ -230,8 +224,7 @@ def test_search_content_misses_gracefully(sandbox):
 def test_overwriting_an_existing_file_is_reported(sandbox):
     """覆盖同名文件时要在返回值里说明，不能让上一份简报无声消失。
 
-    真实场景：模型拿提示词里的示例时间戳当文件名，同一天第二次生成写到
-    和第一次同一个路径。以前返回值只有一句"写入成功"，两份变一份谁都不知道。
+    模型拿提示词里的示例时间戳当文件名时，同一天第二次生成会写到和第一次同一个路径。
     """
     from app.agent.tools import tool_write_file
 

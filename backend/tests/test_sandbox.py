@@ -1,9 +1,6 @@
-"""沙箱隔离测试。
+"""沙箱隔离测试：开一个临时目录当沙箱，从里面往外爬，看爬不爬得出去。
 
-README 里写了「所有文件操作限制在 data/users/<username>/ 内，用 resolve() + relative_to()
-双重校验防目录穿越」。这个文件就是把那句话变成可执行的证据。
-
-思路：开一个临时目录当沙箱，然后从里面往外爬，看爬不爬得出去。
+README 里的「用 resolve() + relative_to() 双重校验防目录穿越」由此变成可执行的证据。
 """
 
 import pytest
@@ -87,7 +84,7 @@ def test_absolute_path_is_blocked(sandbox, tmp_path):
 
 
 def test_nested_traversal_that_lands_back_inside_is_ok(sandbox):
-    """绕一圈回到沙箱内的路径不算越界——校验的是终点，不是路径写法。"""
+    """绕一圈回到沙箱内的路径不算越界，校验的是终点而不是路径写法。"""
     result = tool_read_file("briefs/../preferences.json")
     assert "keywords" in result["content"]
 

@@ -12,7 +12,6 @@ from pathlib import Path
 
 from app.config import DATA_DIR
 
-# 用户数据的根目录
 USERS_DIR = Path(DATA_DIR) / "users"
 USERS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -49,11 +48,9 @@ def create_user(username: str) -> dict:
     if user_dir.exists():
         raise ValueError(f"用户 {username} 已存在")
 
-    # 创建目录
     user_dir.mkdir(parents=True)
     (user_dir / "briefs").mkdir()
 
-    # 默认偏好
     default_prefs = {
         "username": username,
         "keywords": ["AI", "大模型", "LLM", "Agent"],

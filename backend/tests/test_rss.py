@@ -1,10 +1,6 @@
-"""RSS 合并逻辑测试，重点是「按源轮流交错」这个行为。
+"""RSS 合并逻辑测试，重点是「按源轮流交错」这个行为。不联网，fetch_feed 换成假的。
 
-不联网：fetch_feed 被换成假的，每个源返回预设的条目。
-
-这条规则容易被后来的改动无意破坏——一旦退回"按源顺序拼接"，
-max_total 一刀切下去，排在后面的源就整段消失，页面上再也看不到，
-而且不会有任何报错。所以这里把顺序钉死。
+一旦退回「按源顺序拼接」，max_total 一刀切下去后面的源会整段消失且不报错，所以把顺序钉死。
 """
 
 import pytest
@@ -24,10 +20,7 @@ def _item(source_name: str, n: int, link: str | None = None) -> dict:
 
 
 def _install(monkeypatch, feeds: dict):
-    """把 RSS_SOURCES 和 fetch_feed 换成假的。
-
-    feeds 的值传 "ERROR" 字符串表示这个源抓取失败。
-    """
+    """把 RSS_SOURCES 和 fetch_feed 换成假的；feeds 里值为 "ERROR" 表示该源抓取失败。"""
     monkeypatch.setattr(
         rss, "RSS_SOURCES",
         [{"name": name, "url": f"https://feed/{name}"} for name in feeds],
