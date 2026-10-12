@@ -23,7 +23,7 @@
 | 前端 | Vue 3 + TypeScript + Vite + vue-router + axios |
 | 生成时机 | 进入新闻页时按需自动生成（当天已有则跳过） |
 | 存储 | 文件系统（每用户一个目录），无数据库 |
-| 测试 | pytest，117 个用例，不联网、不调模型 |
+| 测试 | pytest，118 个用例，不联网、不调模型 |
 
 ---
 
@@ -32,7 +32,7 @@
 ### 0. 前置
 
 - Python 3.11+
-- Node.js 18+
+- Node.js **20.19+**（或 22.12+）—— Vite 8 的 `engines` 硬性要求，18 起不来
 - 一个[硅基流动](https://siliconflow.cn)的 API Key
 
 ### 1. 后端
@@ -48,12 +48,12 @@ python -m venv venv
 # 装依赖（依赖清单在项目根目录）
 pip install -r ../requirements.txt
 
-# 配置密钥
-cp .env.example .env
+# 配置密钥（Windows 的 cmd / PowerShell 没有 cp，用 copy）
+cp .env.example .env          # Windows: copy .env.example .env
 # 然后编辑 .env，把 SILICONFLOW_API_KEY 换成你自己的
 ```
 
-`.env` 内容：
+`.env` 关键项（其余照 `.env.example` 保持默认）：
 
 ```ini
 SILICONFLOW_API_KEY=sk-你的key
@@ -92,10 +92,31 @@ npm run dev
 ### 3. 用起来
 
 1. 首页输入用户名（如 `alice`）→ 不存在会提示创建
-2. 进「偏好设置」填关键词和话题
+2. 进「偏好设置」填关键词和话题 —— 关键词要**照下面 6 个源的内容方向**填
 3. 进入新闻页后**当天没有简报会自动生成**，右侧 AI 面板逐字打出；
    想重新生成也可以点「✨ 生成今日简报」
 4. 历史简报在右侧下方，点开可查看
+
+> **第一次生成要等 50~90 秒**（要调好几轮模型），右侧面板会逐条打进度，不是卡死。
+
+#### 内置的新闻源（就这 6 个）
+
+偏好只能在这 6 个源返回的内容里筛。关键词要往科技 / AI 方向填；
+填「新能源汽车」「足球」这类源里根本没有的话题，Agent 会如实告诉你「今日无你关注的新闻」，
+这不是 bug。
+
+| 源 | 地址 | 偏重 |
+|---|---|---|
+| IT 之家 | `https://www.ithome.com/rss/` | 科技综合 |
+| 爱范儿 | `https://www.ifanr.com/feed` | 科技综合 |
+| 少数派 | `https://sspai.com/feed` | 效率工具 |
+| 量子位 | `https://www.qbitai.com/feed` | AI 垂直 |
+| 雷锋网 | `https://www.leiphone.com/feed` | AI 垂直 |
+| InfoQ | `https://www.infoq.cn/feed` | 技术 |
+
+这份清单在仓库里有三处：`backend/app/rss.py` 的 `RSS_SOURCES`（唯一的事实来源，
+`fetch_rss` 的 URL 白名单）、`backend/app/agent/prompts.py` 的系统提示词、以及上面这张表。
+`tests/test_prompts.py` 有测试钉住三处一致，改一处忘了另一处会直接变红。
 
 ---
 
@@ -308,7 +329,7 @@ ReAct 循环：
 
 ```bash
 cd backend
-python -m pytest        # 117 个用例，约 1.2 秒
+python -m pytest        # 118 个用例，约 1.2 秒
 ```
 
 全部**不联网、不调模型**，所以可以随便跑、不花钱：
@@ -364,8 +385,11 @@ ai-news-agent/
 │   │   ├── test_sandbox.py   # 沙箱隔离
 │   │   ├── test_tools.py     # 工具白名单 / schema 一致性
 │   │   ├── test_users.py     # 用户名校验 / 偏好读写
+│   │   ├── test_service.py   # 简报生成与落盘
 │   │   ├── test_rss.py       # 多源交错合并
-│   │   └── test_react.py     # ReAct 循环（用假 LLM）
+│   │   ├── test_react.py     # ReAct 循环（用假 LLM）
+│   │   ├── test_llm.py       # LLM 调用封装
+│   │   └── test_prompts.py   # 提示词卫生（示例文件名 / 源清单同步）
 │   ├── pytest.ini            # testpaths 限定为 tests/
 │   ├── check_llm.py          # 排查：API 通不通
 │   ├── check_rss_sources.py  # 排查：哪些 RSS 源能通
