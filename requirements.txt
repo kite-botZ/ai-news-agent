@@ -8,25 +8,10 @@ python-dotenv==1.2.4
 # ==================== 开发依赖（跑自动化测试需要）====================
 pytest==9.1.1
 
-# ==================== 间接依赖（由上面自动安装，锁定版本）====================
-annotated-doc==0.0.5
-annotated-types==0.8.0
-anyio==4.15.1
-click==8.5.0
-colorama==0.4.6
-h11==0.16.0
-httpcore==1.0.7
-idna==3.20
-iniconfig==2.3.1
-jiter==0.17.0
-opentelemetry-api==1.45.1
-packaging==26.3
-pluggy==1.6.0
-pydantic==2.14.0
-pydantic_core==2.50.0
-pygments==2.21.0
-sniffio==1.3.1
-starlette==1.7.0
-truststore==0.10.4
-typing-inspection==0.4.4
-typing_extensions==4.16.0
+# ==================== 间接依赖 ====================
+# 故意不列。交给 pip 按兼容性解析。
+# 这里原先手工抄了一份 freeze 出来的间接依赖清单，但它是错的：钉了 h11==0.16.0，
+# 而 httpcore 要求 h11<0.15，两者无解，新电脑上 `pip install -r requirements.txt`
+# 会直接 ResolutionImpossible。清单里还混进了 APScheduler（代码里早就删掉的
+# 定时任务留下的）和来路不明的 httpx2 / httpcore2。
+# 钉死间接依赖只有在「从一次干净的安装里生成」时才有意义，手抄的只会更脆。
